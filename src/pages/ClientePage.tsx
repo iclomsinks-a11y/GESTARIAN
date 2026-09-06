@@ -1,0 +1,2472 @@
+import React, { useState, useEffect, useRef } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { motion, AnimatePresence } from 'framer-motion'
+import { supabase } from '../lib/supabase'
+import type { Cliente, Vehiculo, Presupuesto, Factura, Cobro, Configuracion, Cita } from '../lib/types'
+import {
+  Image as ImageIcon,
+  Heart,
+  ChevronDown,
+  ChevronUp,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  Send,
+  Printer,
+  X,
+  FileText,
+  AlertCircle,
+  Loader2,
+  CheckCircle2,
+  Euro,
+  Check,
+  Calendar,
+  Clock,
+  CalendarClock,
+  PlusCircle,
+  Upload,
+  Camera,
+  Trash2,
+  FileSpreadsheet,
+  Sun,
+  Moon,
+  Coins,
+  Receipt,
+  LogOut
+} from 'lucide-react'
+import { MatriculaBadge } from '../components/MatriculaBadge'
+import { PresupuestoIcon, FacturaIcon } from '../components/CustomIcons'
+import { getExpediente, validarDocumentoAEAT } from '../lib/utils'
+import { fetchExpedienteFotos } from '../lib/expedienteService'
+import { uploadFileToStorage } from '../services/storageService'
+import {
+  generatePresupuestoPDF,
+  generateFacturaPDF,
+  downloadPresupuestoPDF,
+  downloadFacturaPDF,
+  sendPresupuestoByEmail,
+  sendFacturaByEmail,
+  generateReciboAbonoPDF,
+  downloadReciboAbonoPDF,
+  sendReciboAbonoByEmail,
+  generateFacturaProformaPDF,
+  downloadFacturaProformaPDF,
+  sendFacturaProformaByEmail
+} from '../lib/pdfGenerator'
+import { notificarCitaSolicitadaAlTaller, notificarSolicitudPresupuestoAlTaller } from '../services/notificationService'
+import { useToast } from '../lib/ToastContext'
+import { playSuccessChime, playTimepickerTickSound } from '../lib/sound'
+
+interface ExpedienteGroup {
+  id: string
+  presupuesto: Presupuesto
+  factura?: Factura | null
+  cita?: Cita | null
+}
+
+// Intervalos de 15 min de 09:00 a 18:00 (Hora inicio 09:00 am, hora máxima 18:00)
+const TIME_SLOTS: string[] = []
+for (let h = 9; h <= 18; h++) {
+  for (let m = 0; m < 60; m += 15) {
+    if (h === 18 && m > 0) break
+    TIME_SLOTS.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`)
+  }
+}
+const DEFAULT_12_INDEX = TIME_SLOTS.indexOf('10:00') !== -1 ? TIME_SLOTS.indexOf('10:00') : 0
+
+const MESES = [
+  'ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO',
+  'JULIO', 'AGOSTO', 'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE'
+]
+const DIAS_SEMANA = ['L', 'M', 'X', 'J', 'V', 'S', 'D']
+
+export function ClientePage() {
+  const { token } = useParams<{ token: string }>()
+  const navigate = useNavigate()
+  const { showToast, showActionToast } = useToast()
+
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const [cliente, setCliente] = useState<Cliente | null>(null)
+  const [vehiculo, setVehiculo] = useState<Vehiculo | null>(null)
+  const [allClientes, setAllClientes] = useState<Cliente[]>([])
+  const [config, setConfig] = useState<Configuracion | null>(null)
+
+  const [expedientes, setExpedientes] = useState<ExpedienteGroup[]>([])
+  const [expandedExpedienteId, setExpandedExpedienteId] = useState<string | null>(null)
+  const [isCardExpanded, setIsCardExpanded] = useState<boolean>(false)
+
+  // Modales
+  const [modalPresupuesto, setModalPresupuesto] = useState<{ open: boolean; presupuesto: Presupuesto | null; expedienteStr: string }>({
+    open: false,
+    presupuesto: null,
+    expedienteStr: ''
+  })
+  const [modalFactura, setModalFactura] = useState<{ open: boolean; factura: Factura | null }>({
+    open: false,
+    factura: null
+  })
+  const [modalEstadoAbono, setModalEstadoAbono] = useState<{ open: boolean; factura: Factura | null; cobros: Cobro[] }>({
+    open: false,
+    factura: null,
+    cobros: []
+  })
+  const [modalReciboAbono, setModalReciboAbono] = useState<{ open: boolean; factura: Factura | null; cobros: Cobro[]; expedienteStr: string }>({
+    open: false,
+    factura: null,
+    cobros: [],
+    expedienteStr: ''
+  })
+  const [modalProforma, setModalProforma] = useState<{ open: boolean; factura: Factura | null; cobros: Cobro[]; expedienteStr: string }>({
+    open: false,
+    factura: null,
+    cobros: [],
+    expedienteStr: ''
+  })
+  const [modalGaleria, setModalGaleria] = useState<{ open: boolean; imagenes: string[]; activeIndex: number }>({
+    open: false,
+    imagenes: [],
+    activeIndex: 0
+  })
+
+  // Modal de Cita (Solicitud/Modificación de fecha y hora de entrega)
+  const [modalCita, setModalCita] = useState<{
+    open: boolean
+    presupuesto: Presupuesto | null
+    expedienteStr: string
+    citaExistente?: Cita | null
+  }>({
+    open: false,
+    presupuesto: null,
+    expedienteStr: '',
+    citaExistente: null
+  })
+
+  // Modal de SOLICITAR PRESUPUESTO (Nueva ventana con fotos y descripción)
+  const [modalSolicitudPresupuesto, setModalSolicitudPresupuesto] = useState(false)
+  const [formMarca, setFormMarca] = useState('')
+  const [formModelo, setFormModelo] = useState('')
+  const [formMatricula, setFormMatricula] = useState('')
+  const [formDescripcion, setFormDescripcion] = useState('')
+  const [formPreferenciaHora, setFormPreferenciaHora] = useState('09:00')
+  const [formPreferenciaFecha, setFormPreferenciaFecha] = useState(() => {
+    const d = new Date()
+    d.setDate(d.getDate() + 1)
+    return d.toISOString().split('T')[0]
+  })
+  const [formFotos, setFormFotos] = useState<{ file?: File; preview: string; uploadedUrl?: string }[]>([])
+  const [enviandoSolicitud, setEnviandoSolicitud] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const cameraInputRef = useRef<HTMLInputElement>(null)
+
+  // Estado del selector de fecha/hora dentro del modal de cita
+  const [currentDate, setCurrentDate] = useState(() => new Date())
+  const [selectedDay, setSelectedDay] = useState<number>(() => {
+    const manana = new Date()
+    manana.setDate(manana.getDate() + 1)
+    return manana.getDate()
+  })
+  const [selectedTimeIndex, setSelectedTimeIndex] = useState<number>(DEFAULT_12_INDEX)
+  const [guardandoCita, setGuardandoCita] = useState(false)
+
+  // Likes en imágenes (URL -> boolean)
+  const [likedImages, setLikedImages] = useState<Record<string, boolean>>({})
+
+  // Acciones en progreso
+  const [actionLoading, setActionLoading] = useState(false)
+
+  useEffect(() => {
+    if (!token) return
+    loadData()
+  }, [token])
+
+  async function loadData() {
+    setLoading(true)
+    setError(null)
+    try {
+      let clienteId: string | null = null
+      let vehiculoId: string | null = null
+
+      // Modo Demo / Preview para el Desarrollador
+      if (token === 'demo' || token === 'preview' || token === 'desarrollador') {
+        const { data: firstVeh } = await supabase.from('vehiculos').select('id, cliente_id').order('created_at', { ascending: false }).limit(1).maybeSingle()
+        if (firstVeh) {
+          clienteId = firstVeh.cliente_id
+          vehiculoId = firstVeh.id
+        }
+      } else {
+        // 1. Invitación por token (buscar por token, o si el token es un id de cliente)
+        const { data: invitacion } = await supabase
+          .from('cliente_invitaciones')
+          .select('*')
+          .eq('token', token!)
+          .maybeSingle()
+
+        if (invitacion) {
+          clienteId = invitacion.cliente_id
+          vehiculoId = invitacion.vehiculo_id
+        } else {
+          // Intentar resolver si el token es directamente un cliente_id
+          const { data: cliDirect } = await supabase
+            .from('clientes')
+            .select('id')
+            .eq('id', token!)
+            .maybeSingle()
+
+          if (cliDirect) {
+            clienteId = cliDirect.id
+          } else {
+            // Buscar si es un prefijo inv_
+            const { data: invPrefix } = await supabase
+              .from('cliente_invitaciones')
+              .select('*')
+              .ilike('token', `%${token}%`)
+              .maybeSingle()
+            if (invPrefix) {
+              clienteId = invPrefix.cliente_id
+              vehiculoId = invPrefix.vehiculo_id
+            }
+          }
+        }
+      }
+
+      if (!clienteId) {
+        setError('Enlace no válido o caducado. Contacta con el taller para recibir un nuevo enlace.')
+        setLoading(false)
+        return
+      }
+
+      // 2. Cliente y Vehículo
+      const { data: cli } = await supabase.from('clientes').select('*').eq('id', clienteId).maybeSingle()
+      
+      if (!cli) {
+        setError('No se encontraron los datos del cliente.')
+        setLoading(false)
+        return
+      }
+
+      // Si no tenemos vehiculoId de la invitación, buscar cualquier vehículo perteneciente a este cliente
+      let { data: veh } = vehiculoId 
+        ? await supabase.from('vehiculos').select('*').eq('id', vehiculoId).maybeSingle()
+        : await supabase.from('vehiculos').select('*').eq('cliente_id', clienteId).order('created_at', { ascending: false }).limit(1).maybeSingle()
+
+      // Si aún no tiene vehículo registrado, crear un vehículo genérico para este cliente
+      if (!veh) {
+        const { data: newVeh } = await supabase
+          .from('vehiculos')
+          .insert({
+            cliente_id: clienteId,
+            matricula: 'PENDIENTE',
+            marca: 'VEHÍCULO CLIENTE',
+            modelo: 'EN TRÁMITE'
+          })
+          .select()
+          .single()
+        veh = newVeh
+      }
+      const { data: conf } = await supabase.from('configuracion').select('*').eq('id', 1).maybeSingle()
+      const { data: clientesList } = await supabase.from('clientes').select('*')
+
+      if (!cli || !veh) {
+        setError('No se encontraron los datos del cliente o del vehículo.')
+        setLoading(false)
+        return
+      }
+
+      setCliente(cli)
+      setVehiculo(veh)
+      setConfig(conf || null)
+      setAllClientes(clientesList || [])
+
+      // Pre-cargar datos del vehículo en el formulario de solicitud
+      setFormMarca(veh.marca || '')
+      setFormModelo(veh.modelo || '')
+      setFormMatricula(veh.matricula || '')
+
+      // 3. Presupuestos, Facturas y Citas (buscar por cliente_id o vehiculo_id)
+      const [presRes, facRes, citasRes] = await Promise.all([
+        supabase.from('presupuestos').select('*').or(`vehiculo_id.eq.${veh.id},cliente_id.eq.${cli.id}`).order('created_at', { ascending: false }),
+        supabase.from('facturas').select('*').or(`vehiculo_id.eq.${veh.id},cliente_id.eq.${cli.id}`).order('created_at', { ascending: false }),
+        supabase.from('citas').select('*').or(`vehiculo_id.eq.${veh.id},cliente_id.eq.${cli.id}`).order('created_at', { ascending: false })
+      ])
+
+      const presupuestosList: Presupuesto[] = presRes.data ?? []
+      const facturasList: Factura[] = facRes.data ?? []
+      const citasList: Cita[] = citasRes.data ?? []
+
+      // Mapear expedientes
+      const groups: ExpedienteGroup[] = presupuestosList.map((p) => {
+        const matchedFactura =
+          facturasList.find(
+            (f) =>
+              f.vehiculo_id === veh.id &&
+              (f.numero === p.numero || f.conceptos?.length === p.conceptos?.length)
+          ) ||
+          facturasList[0] ||
+          null
+
+        const matchedCita = citasList.find((c) => c.presupuesto_id === p.id || c.vehiculo_id === veh.id) || null
+
+        return {
+          id: p.id,
+          presupuesto: p,
+          factura: matchedFactura,
+          cita: matchedCita
+        }
+      })
+
+      // Si no hay presupuestos pero sí facturas
+      if (groups.length === 0 && facturasList.length > 0) {
+        facturasList.forEach((f) => {
+          const fakeP: Presupuesto = {
+            id: f.id,
+            numero: f.numero,
+            cliente_id: cli.id,
+            vehiculo_id: veh.id,
+            estado: 'aceptado',
+            conceptos: f.conceptos || [],
+            total: f.total || 0,
+            observaciones: f.observaciones || '',
+            created_at: f.created_at
+          }
+          groups.push({
+            id: f.id,
+            presupuesto: fakeP,
+            factura: f,
+            cita: citasList[0] || null
+          })
+        })
+      }
+
+      // Ordenar expedientes:
+      // 1. Prioridad absoluta: IMPAGADOS (Factura emitida y enviada con cobro pendiente/parcial)
+      // 2. Expedientes ACTIVOS (aún no cerrados por abono total), los más actuales primero cronológicamente
+      // 3. Expedientes CERRADOS (Abono total completado)
+      groups.sort((a, b) => {
+        const aFac = a.factura
+        const bFac = b.factura
+
+        const aImpagado = !!aFac && (!!aFac.enviado_email_at || !!aFac.enviado_whatsapp_at) && aFac.estado_cobro !== 'pagada'
+        const bImpagado = !!bFac && (!!bFac.enviado_email_at || !!bFac.enviado_whatsapp_at) && bFac.estado_cobro !== 'pagada'
+
+        if (aImpagado && !bImpagado) return -1
+        if (!aImpagado && bImpagado) return 1
+
+        const aActivo = !aFac || aFac.estado_cobro !== 'pagada'
+        const bActivo = !bFac || bFac.estado_cobro !== 'pagada'
+
+        if (aActivo && !bActivo) return -1
+        if (!aActivo && bActivo) return 1
+
+        // Orden cronológico más actual primero
+        const aDate = new Date(a.presupuesto.created_at || 0).getTime()
+        const bDate = new Date(b.presupuesto.created_at || 0).getTime()
+        return bDate - aDate
+      })
+
+      setExpedientes(groups)
+      if (groups.length > 0) {
+        setExpandedExpedienteId(groups[0].id)
+      }
+
+      // Likes mapa desde almacenamiento local
+      try {
+        const savedLikes = localStorage.getItem(`dm_car_likes_${cli.id}`)
+        if (savedLikes) {
+          setLikedImages(JSON.parse(savedLikes))
+        }
+      } catch (e) {
+        console.warn('Error leyendo likes locales:', e)
+      }
+
+      // Cargar imágenes para galería
+      const imgs = await fetchExpedienteFotos(cli.id, veh.id, veh.fotos || [])
+      setModalGaleria((prev) => ({ ...prev, imagenes: imgs }))
+    } catch (err: any) {
+      console.error('Error al cargar datos de cliente:', err)
+      setError('Error al cargar los datos. Inténtalo más tarde.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // ACEPTAR PRESUPUESTO -> Dispara confirmación en Toast y abre formulario de CITA
+  const handleAceptarPresupuestoClick = (p: Presupuesto, expStr: string, citaExistente?: Cita | null) => {
+    showActionToast('¿Confirmar aceptación del presupuesto?', async () => {
+      try {
+        await supabase.from('presupuestos').update({ estado: 'aceptado' }).eq('id', p.id)
+        p.estado = 'aceptado'
+        setExpedientes((prev) =>
+          prev.map((item) => (item.id === p.id ? { ...item, presupuesto: { ...item.presupuesto, estado: 'aceptado' } } : item))
+        )
+      } catch (e) {
+        console.warn('Error actualizando presupuesto:', e)
+      }
+
+      playSuccessChime()
+      showToast('PRESUPUESTO ACEPTADO', 'success')
+
+      setModalCita({
+        open: true,
+        presupuesto: p,
+        expedienteStr: expStr,
+        citaExistente: citaExistente || null
+      })
+    })
+  }
+
+  // CONFIRMAR / ACEPTAR PROPUESTA DE CITA DEL TALLER POR PARTE DEL CLIENTE
+  const handleAceptarPropuestaTaller = async (cita: Cita) => {
+    try {
+      await supabase.from('citas').update({ estado: 'aceptada' }).eq('id', cita.id)
+      playSuccessChime()
+      showToast('CITA ACEPTADA', 'success')
+      loadData()
+    } catch (e) {
+      showToast('Error al aceptar cita', 'error')
+    }
+  }
+
+  // SOLICITAR O MODIFICAR CITA DESDE EL FORMULARIO
+  const handleSolicitarCita = async () => {
+    if (!modalCita.presupuesto || !cliente || !vehiculo || guardandoCita) return
+    setGuardandoCita(true)
+
+    try {
+      const horaStr = TIME_SLOTS[selectedTimeIndex] || '09:00'
+      const currentYear = currentDate.getFullYear()
+      const monthFormatted = String(currentDate.getMonth() + 1).padStart(2, '0')
+      const dayFormatted = String(selectedDay).padStart(2, '0')
+      const fechaStr = `${currentYear}-${monthFormatted}-${dayFormatted}`
+
+      const p = modalCita.presupuesto
+      const citaId = modalCita.citaExistente?.id
+
+      if (citaId) {
+        await supabase
+          .from('citas')
+          .update({
+            fecha: fechaStr,
+            hora: horaStr,
+            estado: 'pendiente'
+          })
+          .eq('id', citaId)
+      } else {
+        await supabase.from('citas').insert({
+          presupuesto_id: p.id,
+          cliente_id: cliente.id,
+          vehiculo_id: vehiculo.id,
+          fecha: fechaStr,
+          hora: horaStr,
+          estado: 'pendiente'
+        })
+      }
+
+      void notificarCitaSolicitadaAlTaller({
+        clienteNombre: cliente.nombre,
+        matricula: vehiculo.matricula,
+        presupuestoNumero: p.numero,
+        presupuestoTotal: p.total,
+        fecha: fechaStr,
+        hora: horaStr
+      })
+
+      playSuccessChime()
+      showToast('CITA SOLICITADA Y NOTIFICADA AL TALLER', 'success')
+      setModalCita({ open: false, presupuesto: null, expedienteStr: '', citaExistente: null })
+      loadData()
+    } catch (e: any) {
+      console.error('Error solicitando cita:', e)
+      showToast('Error al solicitar cita: ' + (e.message || ''), 'error')
+    } finally {
+      setGuardandoCita(false)
+    }
+  }
+
+  // MANEJO DE FOTOS PARA LA SOLICITUD DE PRESUPUESTO (MÁXIMO 10 FOTOS)
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files) return
+    const filesArray = Array.from(e.target.files)
+    const espacioDisponible = 10 - formFotos.length
+
+    if (espacioDisponible <= 0) {
+      showToast('Máximo 10 imágenes permitidas', 'warning')
+      return
+    }
+
+    const nuevosArchivos = filesArray.slice(0, espacioDisponible).map((file) => ({
+      file,
+      preview: URL.createObjectURL(file)
+    }))
+
+    setFormFotos((prev) => [...prev, ...nuevosArchivos])
+    if (filesArray.length > espacioDisponible) {
+      showToast(`Solo se añadieron ${espacioDisponible} fotos (límite de 10)`, 'info')
+    }
+    e.target.value = ''
+  }
+
+  const handleRemoveFoto = (index: number) => {
+    setFormFotos((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  // ENVIAR SOLICITUD DE PRESUPUESTO
+  const handleSubmitSolicitudPresupuesto = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!cliente || enviandoSolicitud) return
+
+    if (!formDescripcion.trim()) {
+      showToast('Por favor describe la reparación o servicio requerido', 'warning')
+      return
+    }
+
+    setEnviandoSolicitud(true)
+    try {
+      // 1. Subir imágenes si existen
+      const uploadedUrls: string[] = []
+      for (const item of formFotos) {
+        if (item.file) {
+          const uploadRes = await uploadFileToStorage(item.file, item.file.name, {
+            clienteId: cliente.id,
+            vehiculoId: vehiculo?.id,
+            categoria: 'fotos'
+          })
+          if (uploadRes.success && uploadRes.url) {
+            uploadedUrls.push(uploadRes.url)
+          } else {
+            uploadedUrls.push(item.preview)
+          }
+        } else if (item.uploadedUrl) {
+          uploadedUrls.push(item.uploadedUrl)
+        }
+      }
+
+      // 2. Generar número correlativo temporal de presupuesto
+      const randomPresNum = 'SOL-' + Math.floor(1000 + Math.random() * 9000)
+
+      // 3. Crear registro de presupuesto pendiente con la solicitud
+      const { data: newPres, error: presErr } = await supabase
+        .from('presupuestos')
+        .insert({
+          numero: randomPresNum,
+          cliente_id: cliente.id,
+          vehiculo_id: vehiculo?.id || null,
+          estado: 'pendiente',
+          conceptos: [
+            {
+              descripcion: `Solicitud de cliente: ${formDescripcion.trim().slice(0, 100)}...`,
+              cantidad: 1,
+              precio: 0
+            }
+          ],
+          total: 0,
+          observaciones: `[SOLICITUD CLIENTE]\nVehículo: ${formMarca} ${formModelo} (${formMatricula})\nPreferencia de Entrega: Día ${formPreferenciaFecha} a las ${formPreferenciaHora} h\nReparación requerida:\n${formDescripcion.trim()}`,
+          fotos: uploadedUrls
+        })
+        .select()
+        .single()
+
+      if (presErr) {
+        console.warn('Advertencia creando registro de presupuesto:', presErr)
+      }
+
+      // 4. Actualizar fotos del vehículo si aplica
+      if (vehiculo && uploadedUrls.length > 0) {
+        const fotosActuales = vehiculo.fotos || []
+        await supabase
+          .from('vehiculos')
+          .update({
+            marca: formMarca || vehiculo.marca,
+            modelo: formModelo || vehiculo.modelo,
+            matricula: formMatricula || vehiculo.matricula,
+            fotos: [...fotosActuales, ...uploadedUrls]
+          })
+          .eq('id', vehiculo.id)
+      }
+
+      // 5. Notificar al Jefe de Taller por Email
+      void notificarSolicitudPresupuestoAlTaller({
+        clienteNombre: cliente.nombre,
+        marca: formMarca || vehiculo?.marca,
+        modelo: formModelo || vehiculo?.modelo,
+        matricula: formMatricula || vehiculo?.matricula,
+        descripcion: `[Preferencia Entrega: Día ${formPreferenciaFecha} a las ${formPreferenciaHora} h] ${formDescripcion.trim()}`,
+        totalFotos: uploadedUrls.length
+      })
+
+      playSuccessChime()
+      showToast('SOLICITUD DE PRESUPUESTO ENVIADA CORRECTAMENTE', 'success')
+      setModalSolicitudPresupuesto(false)
+      setFormDescripcion('')
+      setFormPreferenciaHora('09:00')
+      setFormFotos([])
+      loadData()
+    } catch (err: any) {
+      console.error('Error enviando solicitud:', err)
+      showToast('Error al enviar solicitud: ' + (err.message || ''), 'error')
+    } finally {
+      setEnviandoSolicitud(false)
+    }
+  }
+
+  // Controles de mes
+  const handlePrevMonth = () => {
+    setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1))
+    setSelectedDay(1)
+  }
+  const handleNextMonth = () => {
+    setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1))
+    setSelectedDay(1)
+  }
+  const daysInMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0).getDate()
+  const firstDayIndex = (new Date(currentDate.getFullYear(), currentDate.getMonth(), 1).getDay() + 6) % 7
+
+  // Toggle Me Gusta en imagen
+  const handleToggleLike = async (imageUrl: string) => {
+    if (!cliente || !vehiculo) return
+    const currentStatus = !likedImages[imageUrl]
+
+    setLikedImages((prev) => {
+      const updated = { ...prev, [imageUrl]: currentStatus }
+      try {
+        localStorage.setItem(`dm_car_likes_${cliente.id}`, JSON.stringify(updated))
+      } catch (e) {
+        console.warn('Error guardando like:', e)
+      }
+      return updated
+    })
+
+    showToast(currentStatus ? '¡Guardada en tus favoritos!' : 'Eliminada de favoritos', 'success')
+  }
+
+  // Abrir Visor Galería
+  const handleOpenGaleria = async (initialIndex = 0) => {
+    if (!cliente || !vehiculo) return
+    const imgs = await fetchExpedienteFotos(cliente.id, vehiculo.id, vehiculo.fotos || [])
+    setModalGaleria({
+      open: true,
+      imagenes: imgs,
+      activeIndex: initialIndex
+    })
+  }
+
+  // Abrir Estado del Abono
+  const handleOpenEstadoAbono = async (fac: Factura) => {
+    try {
+      const { data: cobrosData } = await supabase
+        .from('cobros')
+        .select('*')
+        .eq('factura_id', fac.id)
+        .order('fecha', { ascending: false })
+
+      setModalEstadoAbono({
+        open: true,
+        factura: fac,
+        cobros: cobrosData || []
+      })
+    } catch (e) {
+      setModalEstadoAbono({
+        open: true,
+        factura: fac,
+        cobros: []
+      })
+    }
+  }
+
+  // Acciones Presupuesto (Descargar / Enviar / Imprimir)
+  const handleDownloadPresupuesto = (p: Presupuesto, expStr: string) => {
+    downloadPresupuestoPDF(p, cliente, vehiculo, config, expStr)
+    showToast('Presupuesto descargado en PDF', 'success')
+  }
+
+  const handleSendPresupuesto = async (p: Presupuesto, expStr: string) => {
+    if (!cliente?.email) {
+      alert('No hay un correo electrónico asociado a tu cuenta.')
+      return
+    }
+    setActionLoading(true)
+    try {
+      const res = await sendPresupuestoByEmail(p, cliente, vehiculo, config, expStr)
+      if (res.success) {
+        showToast('Presupuesto enviado a tu correo electrónico', 'success')
+      } else {
+        showToast('No se pudo enviar el correo: ' + (res.error || ''), 'error')
+      }
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  const handlePrintPresupuesto = (p: Presupuesto, expStr: string) => {
+    const doc = generatePresupuestoPDF(p, cliente, vehiculo, config, expStr)
+    doc.autoPrint()
+    const blobUrl = doc.output('bloburl')
+    window.open(blobUrl, '_blank')
+  }
+
+  // Helper para saber si el cliente es sociedad o particular
+  const isEmpresaCliente = (cli?: Cliente | null): boolean => {
+    if (!cli) return false
+    const doc = cli.dni ? cli.dni.trim().toUpperCase() : ''
+    const val = validarDocumentoAEAT(doc)
+    if (val.tipo === 'CIF') return true
+    const nom = (cli.nombre || '').toUpperCase()
+    const keywords = ['S.L.', 'SL', 'S.A.', 'SA', 'S.L.U.', 'SLU', 'SOCIEDAD', 'AYUNTAMIENTO', 'ORGANISMO', 'DIPUTACION', 'COMUNIDAD', 'COOPERATIVA', 'CORP']
+    return keywords.some(k => nom.includes(k))
+  }
+
+  // Abrir Recibo de Abono o Factura Proforma según tipo de cliente
+  const handleOpenReciboOProforma = async (exp: ExpedienteGroup, expStr: string) => {
+    if (!exp.factura) return
+    const { data: cobrosData } = await supabase
+      .from('cobros')
+      .select('*')
+      .eq('factura_id', exp.factura.id)
+      .order('fecha', { ascending: false })
+
+    const cobros = cobrosData || []
+    if (isEmpresaCliente(cliente)) {
+      setModalProforma({
+        open: true,
+        factura: exp.factura,
+        cobros,
+        expedienteStr: expStr
+      })
+    } else {
+      setModalReciboAbono({
+        open: true,
+        factura: exp.factura,
+        cobros,
+        expedienteStr: expStr
+      })
+    }
+  }
+
+  const handleDownloadRecibo = (f: Factura, cobros: Cobro[], expStr: string) => {
+    const ultimoAbono = cobros.length > 0 ? cobros[0].importe : (f.total_abonado || 0)
+    const previos = cobros.slice(1)
+    downloadReciboAbonoPDF(f, ultimoAbono, previos, cliente, vehiculo, config, expStr)
+    showToast('Recibo de abono descargado en PDF', 'success')
+  }
+
+  const handleSendRecibo = async (f: Factura, cobros: Cobro[], expStr: string) => {
+    if (!cliente?.email) {
+      alert('No hay un correo electrónico asociado a tu cuenta.')
+      return
+    }
+    setActionLoading(true)
+    try {
+      const ultimoAbono = cobros.length > 0 ? cobros[0].importe : (f.total_abonado || 0)
+      const previos = cobros.slice(1)
+      const res = await sendReciboAbonoByEmail(f, ultimoAbono, previos, cliente, vehiculo, config, expStr)
+      if (res.success) {
+        showToast('Recibo de abono enviado a tu correo electrónico', 'success')
+      } else {
+        showToast('No se pudo enviar el correo: ' + (res.error || ''), 'error')
+      }
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  const handleDownloadProforma = (f: Factura, cobros: Cobro[], expStr: string) => {
+    downloadFacturaProformaPDF(f, cliente, vehiculo, config, expStr, cobros)
+    showToast('Factura proforma descargada en PDF', 'success')
+  }
+
+  const handleSendProforma = async (f: Factura, cobros: Cobro[], expStr: string) => {
+    if (!cliente?.email) {
+      alert('No hay un correo electrónico asociado a tu cuenta.')
+      return
+    }
+    setActionLoading(true)
+    try {
+      const res = await sendFacturaProformaByEmail(f, cliente, vehiculo, config, expStr, cobros)
+      if (res.success) {
+        showToast('Factura proforma enviada a tu correo electrónico', 'success')
+      } else {
+        showToast('No se pudo enviar el correo: ' + (res.error || ''), 'error')
+      }
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  // Acciones Factura Oficial (Descargar / Enviar / Imprimir)
+  const handleDownloadFactura = (f: Factura) => {
+    downloadFacturaPDF(f, cliente, vehiculo, config)
+    showToast('Factura descargada en PDF', 'success')
+  }
+
+  const handleSendFactura = async (f: Factura) => {
+    if (!cliente?.email) {
+      alert('No hay un correo electrónico asociado a tu cuenta.')
+      return
+    }
+    setActionLoading(true)
+    try {
+      const res = await sendFacturaByEmail(f, cliente, vehiculo, config)
+      if (res.success) {
+        showToast('Factura enviada a tu correo electrónico', 'success')
+      } else {
+        showToast('No se pudo enviar el correo: ' + (res.error || ''), 'error')
+      }
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  const handlePrintFactura = (f: Factura) => {
+    const doc = generateFacturaPDF(f, cliente, vehiculo, config)
+    doc.autoPrint()
+    const blobUrl = doc.output('bloburl')
+    window.open(blobUrl, '_blank')
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-bg-950">
+        <div className="text-center">
+          <Loader2 className="w-10 h-10 text-cyan-400 animate-spin mx-auto mb-3" />
+          <p className="text-white/60 text-sm font-medium">Cargando área de cliente...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (error || !cliente || !vehiculo) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-bg-950 p-4">
+        <div className="text-center max-w-md bg-bg-900/90 border border-red-500/40 rounded-3xl p-8 shadow-2xl">
+          <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
+          <h2 className="text-lg font-bold text-white mb-2">Acceso No Disponible</h2>
+          <p className="text-red-300 text-sm mb-6 leading-relaxed">{error || 'No se pudo cargar la información.'}</p>
+          <p className="text-white/40 text-xs">Por favor, contacta con DM CAR para recibir un nuevo enlace de acceso.</p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-black text-white selection:bg-cyan-500 selection:text-black">
+      {/* ───────────────────────────────────────────────────────────── */}
+      {/* 1. CABECERA: LOGO x0.6 (96px x 96px) + TEXTO + BOTÓN SALIR */}
+      {/* ───────────────────────────────────────────────────────────── */}
+      <header className="w-full px-[30px] pt-6 pb-2 max-w-5xl mx-auto flex items-end justify-between relative">
+        <div className="flex items-end gap-3">
+          <div className="w-[85px] h-[85px] sm:w-[96px] sm:h-[96px] rounded-2xl overflow-hidden shadow-[0_0_25px_rgba(6,182,212,0.4)] border-2 border-white/20 bg-white shrink-0 hover:scale-105 transition-transform">
+            <img src="/images/logos/logo.jpg" alt="DM CAR" className="w-full h-full object-cover" />
+          </div>
+
+          <button
+            onClick={() => {
+              sessionStorage.removeItem('gestarian_cliente_authed_id')
+              navigate('/cliente/acceso')
+            }}
+            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900/80 border border-slate-700 text-slate-400 hover:text-rose-400 hover:border-rose-500/50 text-xs font-bold transition-all cursor-pointer"
+            title="Cerrar sesión"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Salir</span>
+          </button>
+        </div>
+
+        <div className="flex flex-col items-end justify-end text-right select-none">
+          <span
+            className="font-black text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-teal-200 to-white tracking-wider leading-none drop-shadow-[0_0_20px_rgba(6,182,212,0.5)]"
+            style={{ fontSize: 'clamp(2.8rem, 9vw, 6rem)', lineHeight: '0.85' }}
+          >
+            DM CAR
+          </span>
+          <span className="text-xs sm:text-sm font-bold tracking-[0.3em] uppercase text-cyan-400/80 mt-1 leading-none">
+            Área de Cliente
+          </span>
+        </div>
+      </header>
+
+      {/* BOTÓN: SOLICITAR PRESUPUESTO */}
+      <div className="w-full max-w-5xl mx-auto px-4 sm:px-8 mt-4 mb-7 flex justify-center">
+        <button
+          onClick={() => setModalSolicitudPresupuesto(true)}
+          className="w-[85%] max-w-lg py-4 px-3 sm:px-5 rounded-2xl bg-black/90 hover:bg-black text-white font-black uppercase tracking-wider border-2 border-cyan-200 shadow-[0_0_20px_rgba(6,182,212,0.90)] hover:shadow-[0_0_25px_rgba(6,182,212,1)] transition-all active:scale-[0.99] flex items-center justify-center text-center cursor-pointer select-none"
+          title="Solicitar Presupuesto"
+        >
+          <span 
+            className="w-full block text-center font-black tracking-wide whitespace-nowrap overflow-hidden text-ellipsis text-white"
+            style={{ fontSize: 'clamp(0.98rem, 4.3vw, 1.45rem)' }}
+          >
+            SOLICITAR PRESUPUESTO
+          </span>
+        </button>
+      </div>
+
+      {/* NOMBRE DEL CLIENTE EN GRANDE Y MENSAJE DE BIENVENIDA EN DOS LÍNEAS (TAMAÑO x1.6) */}
+      <div className="w-full max-w-4xl mx-auto px-4 sm:px-6 mb-7 text-center flex flex-col items-center select-none">
+        <h1 className="text-2xl sm:text-4xl md:text-5xl font-extrabold uppercase tracking-wide text-white drop-shadow-[0_0_15px_rgba(255,255,255,0.4)]">
+          {cliente.nombre}
+        </h1>
+        <p className="text-2xl sm:text-3xl md:text-4xl text-cyan-400 font-black mt-2.5 tracking-wide leading-snug sm:leading-tight drop-shadow-[0_0_14px_rgba(6,182,212,0.55)]">
+          <span>Bienvenido/a a tu panel</span>
+          <span className="block mt-0.5 sm:mt-1 text-teal-300">exclusivo de seguimiento</span>
+        </p>
+      </div>
+
+      {/* ───────────────────────────────────────────────────────────── */}
+      {/* 2. TARJETA FLOTANTE PRINCIPAL */}
+      {/* ───────────────────────────────────────────────────────────── */}
+      <main className="max-w-4xl mx-auto px-4 sm:px-6 pb-20">
+        {/* TARJETA PRINCIPAL COLAPSABLE */}
+        <div
+          onClick={() => setIsCardExpanded((prev) => !prev)}
+          className={`relative bg-slate-900/90 backdrop-blur-xl border-2 rounded-3xl p-6 sm:p-8 shadow-[0_20px_60px_rgba(0,0,0,0.8),0_0_30px_rgba(6,182,212,0.2)] transition-all duration-300 cursor-pointer select-none ${
+            isCardExpanded
+              ? 'border-cyan-400/90 shadow-[0_0_35px_rgba(6,182,212,0.3)]'
+              : 'border-cyan-500/40 hover:border-cyan-400/70 hover:scale-[1.01]'
+          }`}
+        >
+          {/* CABECERA VISIBLE SIEMPRE: MATRÍCULA ARRIBA CENTRADA + MARCA Y MODELO CENTRADO DEBAJO */}
+          <div className="flex flex-col items-center justify-center text-center">
+            {/* 1. Matrícula estándar oficial con dibujo y caracteres negros */}
+            <div className="mb-3.5 hover:scale-105 transition-transform">
+              <MatriculaBadge matricula={vehiculo.matricula} size="xl" />
+            </div>
+
+            {/* 2. Marca y Modelo centrado debajo de la matrícula */}
+            <div className="flex items-baseline justify-center flex-wrap gap-x-3 gap-y-1">
+              <span className="text-3xl sm:text-4xl md:text-5xl font-black text-white tracking-wide uppercase drop-shadow-[0_0_15px_rgba(255,255,255,0.4)]">
+                {vehiculo.marca || ''} {vehiculo.modelo || ''}
+              </span>
+              {vehiculo.anio && (
+                <span className="text-base sm:text-lg text-slate-400 font-bold">
+                  ({vehiculo.anio})
+                </span>
+              )}
+            </div>
+
+            {/* Indicador de pulsar para expandir/colapsar */}
+            <div className="mt-4 flex items-center justify-center gap-2 text-xs font-bold uppercase tracking-widest text-cyan-400/90 bg-cyan-950/40 border border-cyan-500/30 px-4 py-1.5 rounded-full">
+              <span>{isCardExpanded ? 'Pulsar para plegar' : 'Pulsar para ver detalles y expedientes'}</span>
+              {isCardExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4 animate-bounce" />}
+            </div>
+          </div>
+
+          {/* CONTENIDO DESPLEGABLE (SE EXPANDE HACIA ABAJO AL PULSAR LA TARJETA) */}
+          <AnimatePresence>
+            {isCardExpanded && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.35, ease: 'easeInOut' }}
+                className="overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {/* HISTORIAL DE EXPEDIENTES (IMPAGADOS EN ROJO PRIORIDAD ABSOLUTA, ACTIVOS PRIMERO) */}
+                <div className="space-y-4 mt-8 pt-6 border-t border-slate-800">
+                  <div className="flex items-center justify-between px-2">
+                    <h3 className="text-base sm:text-lg font-black uppercase tracking-widest text-white">
+                      HISTORIAL DE EXPEDIENTES
+                    </h3>
+                    <span className="text-lg sm:text-xl font-black text-cyan-400 tabular-nums">
+                      {expedientes.length} {expedientes.length === 1 ? 'expediente' : 'expedientes'}
+                    </span>
+                  </div>
+
+                  {expedientes.length === 0 ? (
+                    <div className="text-center py-10 bg-slate-950/40 rounded-2xl border border-slate-800">
+                      <FileText className="w-10 h-10 text-slate-600 mx-auto mb-2" />
+                      <p className="text-slate-400 text-sm">No hay expedientes activos para este vehículo.</p>
+                    </div>
+                  ) : (
+                    expedientes.map((exp) => {
+                      const expStr = getExpediente(exp.presupuesto, cliente, allClientes)
+                      const isExpanded = expandedExpedienteId === exp.id
+                      const conceptos = exp.presupuesto.conceptos || []
+                      const hasFactura = !!exp.factura
+                      const fac = exp.factura
+                      const facturaPagada = fac?.estado_cobro === 'pagada'
+                      const isImpagado = !!fac && (!!fac.enviado_email_at || !!fac.enviado_whatsapp_at) && fac.estado_cobro !== 'pagada'
+                      const isActivo = !fac || fac.estado_cobro !== 'pagada'
+                      const presAceptado = exp.presupuesto.estado === 'aceptado'
+                      const cita = exp.cita
+
+                      // Cálculos de Base, IVA y Total
+                      const totalPresupuesto = exp.presupuesto.total || 0
+                      const baseImponible = totalPresupuesto / 1.21
+                      const ivaImporte = totalPresupuesto - baseImponible
+
+                      return (
+                        <div
+                          key={exp.id}
+                          className={`rounded-2xl border-2 transition-all duration-300 overflow-hidden ${
+                            isImpagado
+                              ? isExpanded
+                                ? 'border-rose-500 bg-rose-950/60 shadow-[0_0_30px_rgba(244,63,94,0.45)]'
+                                : 'border-rose-600/80 bg-rose-950/30 hover:border-rose-500 shadow-[0_0_20px_rgba(244,63,94,0.25)]'
+                              : isExpanded
+                              ? 'border-cyan-400/80 bg-slate-950/90 shadow-[0_0_25px_rgba(6,182,212,0.25)]'
+                              : 'border-slate-800 bg-slate-950/40 hover:border-slate-700'
+                          }`}
+                        >
+                          {/* Fila Encabezado del Expediente (Clic para desplegar) */}
+                          <div
+                            onClick={() => setExpandedExpedienteId(isExpanded ? null : exp.id)}
+                            className="p-4 sm:p-5 flex flex-col gap-3 cursor-pointer select-none"
+                          >
+                            {/* 1ª LÍNEA: NÚMERO DE EXPEDIENTE A LA IZQUIERDA (x1.5) Y NÚMERO DE PRESUPUESTO A LA DERECHA (x1.5) */}
+                            <div className="flex items-center justify-between gap-4">
+                              <span className={`font-mono font-black text-lg sm:text-xl tracking-wide ${
+                                isImpagado ? 'text-rose-400' : 'text-cyan-400'
+                              }`}>
+                                EXP: {expStr}
+                              </span>
+
+                              <div className="flex items-center gap-3">
+                                <span className="font-mono font-black text-lg sm:text-xl text-slate-200">
+                                  PRES: {exp.presupuesto.numero}
+                                </span>
+                                <div className="w-8 h-8 rounded-full bg-slate-800/80 flex items-center justify-center text-slate-400 shrink-0">
+                                  {isExpanded ? <ChevronUp className="w-5 h-5 text-cyan-400" /> : <ChevronDown className="w-5 h-5" />}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* 2ª LÍNEA: FECHA DEL EXPEDIENTE (x2) Y ESTADO (x1.5) */}
+                            <div className="flex items-center justify-between gap-4 pt-1 border-t border-slate-800/60">
+                              <p className="text-sm sm:text-base font-bold text-slate-300">
+                                📅 {new Date(exp.presupuesto.created_at).toLocaleDateString('es-ES', {
+                                  day: '2-digit',
+                                  month: 'long',
+                                  year: 'numeric'
+                                })}
+                              </p>
+
+                              {isImpagado ? (
+                                <span className="text-xs sm:text-sm px-3 py-1 rounded-full font-black uppercase tracking-wider bg-rose-500 text-white shadow-[0_0_10px_rgba(244,63,94,0.6)] animate-pulse">
+                                  IMPAGADO
+                                </span>
+                              ) : isActivo ? (
+                                <span className="text-xs sm:text-sm px-3 py-1 rounded-full font-black uppercase tracking-wider bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">
+                                  ACTIVO
+                                </span>
+                              ) : (
+                                <span className="text-xs sm:text-sm px-3 py-1 rounded-full font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                  CERRADO
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Contenido Desplegado */}
+                          {isExpanded && (
+                            <div className="p-4 sm:p-6 border-t border-slate-800 bg-slate-900/60 space-y-6 animate-in fade-in duration-200">
+                              {/* Tabla de Conceptos */}
+                              <div>
+                                {conceptos.length === 0 ? (
+                                  <p className="text-xs text-slate-500 italic">No se desglosaron conceptos específicos.</p>
+                                ) : (
+                                  <div className="overflow-x-auto">
+                                    <table className="w-full text-left text-xs sm:text-sm">
+                                      <thead>
+                                        <tr className="border-b border-slate-800 text-slate-400 font-semibold uppercase text-[11px] sm:text-xs">
+                                          <th className="pb-2">Descripción</th>
+                                          <th className="pb-2 text-center w-16">Cant.</th>
+                                          <th className="pb-2 text-right w-24">Precio Unit.</th>
+                                          <th className="pb-2 text-right w-24">Importe</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-slate-800/60 text-slate-200 font-medium">
+                                        {conceptos.map((c, idx) => (
+                                          <tr key={idx} className="hover:bg-white/[0.02]">
+                                            <td className="py-2.5 pr-2 font-medium">{c.descripcion}</td>
+                                            <td className="py-2.5 text-center text-slate-400 tabular-nums">{c.cantidad}</td>
+                                            <td className="py-2.5 text-right text-slate-400 tabular-nums">{c.precio.toFixed(2)} €</td>
+                                            <td className="py-2.5 text-right font-bold text-white tabular-nums">
+                                              {(c.cantidad * c.precio).toFixed(2)} €
+                                            </td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* BASE IMPONIBLE, IVA Y TOTAL PRESUPUESTO (DESPLEGADO TRAS LOS CONCEPTOS) */}
+                              <div className="p-4 rounded-2xl bg-slate-950/90 border border-slate-800 space-y-2 shadow-inner">
+                                <div className="flex items-center justify-between text-xs text-slate-400">
+                                  <span>Base Imponible:</span>
+                                  <span className="font-mono font-bold tabular-nums">{baseImponible.toFixed(2)} €</span>
+                                </div>
+                                <div className="flex items-center justify-between text-xs text-slate-400">
+                                  <span>I.V.A. (21%):</span>
+                                  <span className="font-mono font-bold tabular-nums">{ivaImporte.toFixed(2)} €</span>
+                                </div>
+                                <div className="flex flex-col sm:flex-row items-center justify-between gap-2 pt-2 border-t border-slate-800">
+                                  <span className="text-sm sm:text-base font-black uppercase tracking-wider text-slate-200">
+                                    TOTAL PRESUPUESTO
+                                  </span>
+                                  <span className="text-2xl sm:text-3xl font-black text-emerald-400 tabular-nums drop-shadow-[0_0_12px_rgba(16,185,129,0.3)]">
+                                    {totalPresupuesto.toFixed(2)} €
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* ───────────────────────────────────────────────────────────── */}
+                              {/* BOTÓN: ACEPTAR PRESUPUESTO O PENDIENTE DE VALORACIÓN & ESTADO DE CITA */}
+                              {/* ───────────────────────────────────────────────────────────── */}
+                              <div className="pt-2 border-t border-slate-800/80 flex flex-col items-center justify-center gap-3">
+                                {/* CASO 1: Presupuesto Pendiente de Valoración por el Taller (total 0 o sin conceptos valorados) */}
+                                {!presAceptado && totalPresupuesto <= 0 && (
+                                  <div className="w-full flex items-center justify-between p-3.5 rounded-2xl bg-amber-950/30 border-2 border-amber-500/50">
+                                    <div className="flex items-center gap-2.5">
+                                      <div className="w-3 h-3 rounded-full bg-amber-400 animate-ping" />
+                                      <div>
+                                        <span className="font-mono font-black text-amber-400 text-sm block">PENDIENTE</span>
+                                        <span className="text-[11px] text-slate-300">Pendiente de asignación de precio y cita por el taller</span>
+                                      </div>
+                                    </div>
+                                    <span className="px-3 py-1 rounded-lg bg-amber-500/20 text-amber-300 font-mono font-black text-xs border border-amber-500/40">
+                                      EN REVISIÓN
+                                    </span>
+                                  </div>
+                                )}
+
+                                {/* CASO 2: Presupuesto Valorado y Listo para Aceptar por el Cliente */}
+                                {!presAceptado && totalPresupuesto > 0 && (
+                                  <button
+                                    onClick={() => handleAceptarPresupuestoClick(exp.presupuesto, expStr, exp.cita)}
+                                    className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs sm:text-sm shadow-[0_0_20px_rgba(16,185,129,0.5)] border-2 border-emerald-400 flex items-center justify-center gap-2 transition-all hover:scale-[1.02] active:scale-95 uppercase tracking-wider cursor-pointer"
+                                    title="Aceptar este presupuesto valorado"
+                                  >
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-200 shrink-0" />
+                                    <span>ACEPTAR PRESUPUESTO</span>
+                                  </button>
+                                )}
+
+                                {/* Si ya está aceptado pero aún no tiene cita solicitada */}
+                                {presAceptado && !cita && (
+                                  <div className="w-full flex flex-col sm:flex-row items-center justify-between gap-3 p-4 rounded-2xl bg-emerald-950/30 border-2 border-emerald-500/50">
+                                    <div className="flex items-center gap-3">
+                                      <CheckCircle2 className="w-6 h-6 text-emerald-400 shrink-0" />
+                                      <div>
+                                        <span className="font-bold text-emerald-400 text-sm block">Presupuesto Aceptado</span>
+                                        <span className="text-xs text-slate-300">Solicita fecha y hora para la entrega de tu vehículo.</span>
+                                      </div>
+                                    </div>
+                                    <button
+                                      onClick={() =>
+                                        setModalCita({
+                                          open: true,
+                                          presupuesto: exp.presupuesto,
+                                          expedienteStr: expStr,
+                                          citaExistente: null
+                                        })
+                                      }
+                                      className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg uppercase tracking-wider flex items-center gap-2 transition-all active:scale-95 shrink-0 cursor-pointer"
+                                    >
+                                      <Calendar className="w-4 h-4" /> Solicitar Cita
+                                    </button>
+                                  </div>
+                                )}
+
+                                {/* Si hay cita registrada Y el presupuesto ya fue respondido/valorado por el taller */}
+                                {cita && (totalPresupuesto > 0 || presAceptado || cita.estado === 'confirmada' || cita.estado === 'aceptada') && (() => {
+                                  // Formatear fecha a dd/mm/aa
+                                  const d = new Date(cita.fecha)
+                                  const dd = String(d.getDate()).padStart(2, '0')
+                                  const mm = String(d.getMonth() + 1).padStart(2, '0')
+                                  const aa = String(d.getFullYear()).slice(-2)
+                                  const fechaShort = `${dd}/${mm}/${aa}`
+                                  const horaStr = cita.hora ? cita.hora.substring(0, 5) : '09:00'
+
+                                  const isFinalizada = hasFactura && (facturaPagada || !!fac?.enviado_email_at || !!fac?.enviado_whatsapp_at)
+                                  const isConfirmada = cita.estado === 'confirmada'
+                                  const isAceptada = cita.estado === 'aceptada'
+                                  const isAsignada = !isFinalizada && !isConfirmada && !isAceptada
+
+                                  const estadoLabel = isFinalizada
+                                    ? 'FINALIZADA'
+                                    : isConfirmada
+                                    ? 'CONFIRMADA'
+                                    : isAceptada
+                                    ? 'ACEPTADA'
+                                    : 'ASIGNADA'
+
+                                  const badgeClass = isFinalizada
+                                    ? 'bg-slate-800/80 text-slate-300 border-slate-700'
+                                    : isConfirmada
+                                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
+                                    : isAceptada
+                                    ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/50'
+                                    : 'bg-amber-500/20 text-amber-300 border-amber-500/50 animate-pulse'
+
+                                  const cardBgBorder = isFinalizada
+                                    ? 'bg-slate-950/60 border-slate-800'
+                                    : isConfirmada
+                                    ? 'bg-emerald-950/40 border-emerald-500 shadow-[0_0_20px_rgba(16,185,129,0.25)]'
+                                    : isAceptada
+                                    ? 'bg-cyan-950/40 border-cyan-500 shadow-[0_0_20px_rgba(6,182,212,0.25)]'
+                                    : 'bg-slate-900/90 border-amber-500/70 shadow-[0_0_20px_rgba(245,158,11,0.2)]'
+
+                                  return (
+                                    <div className={`w-full p-5 rounded-2xl border-2 space-y-3.5 ${cardBgBorder}`}>
+                                      {/* TÍTULO ARRIBA: CITADO: A LA IZQUIERDA Y ESTADO A LA DERECHA */}
+                                      <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                                        <h3 className="text-2xl sm:text-3xl font-black text-white uppercase tracking-wider">
+                                          CITADO:
+                                        </h3>
+
+                                        <span className={`text-xs px-[2px] py-0.5 rounded-lg font-black uppercase tracking-wider whitespace-nowrap inline-block text-center border ${badgeClass}`}>
+                                          {estadoLabel}
+                                        </span>
+                                      </div>
+
+                                      {/* SIGUIENTE LÍNEA: DD/MM/AA (TAMAÑO x2) Y HORA 00:00 A LA DERECHA */}
+                                      <div className="flex items-baseline justify-between text-slate-200 py-1.5 w-full">
+                                        <span className="text-white font-mono font-black text-3xl sm:text-4xl tracking-tight">
+                                          {fechaShort}
+                                        </span>
+                                        <span className="text-cyan-400 font-mono font-black text-3xl sm:text-4xl tracking-tight text-right">
+                                          {horaStr}
+                                        </span>
+                                      </div>
+
+                                      {/* PIE DE LA TARJETA: BOTONES ACEPTAR - MODIFICAR CENTRADOS REPARTIÉNDOSE EL ANCHO EQUITATIVAMENTE */}
+                                      {!isFinalizada && (
+                                        <div className="pt-3 border-t border-slate-800/60 w-full">
+                                          {isAsignada ? (
+                                            <div className="grid grid-cols-2 gap-3 w-full">
+                                              <button
+                                                onClick={() => handleAceptarPropuestaTaller(cita)}
+                                                className="w-full py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs sm:text-sm shadow-md uppercase tracking-wider flex items-center justify-center gap-1.5 transition-all active:scale-95 cursor-pointer text-center"
+                                                title="Aceptar esta propuesta de cita"
+                                              >
+                                                <Check className="w-4 h-4" /> ACEPTAR
+                                              </button>
+
+                                              <button
+                                                onClick={() =>
+                                                  setModalCita({
+                                                    open: true,
+                                                    presupuesto: exp.presupuesto,
+                                                    expedienteStr: expStr,
+                                                    citaExistente: cita
+                                                  })
+                                                }
+                                                className="w-full py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 hover:text-cyan-200 font-black text-xs sm:text-sm border border-cyan-500/40 uppercase tracking-wider transition-all active:scale-95 shadow cursor-pointer text-center"
+                                              >
+                                                MODIFICAR
+                                              </button>
+                                            </div>
+                                          ) : (
+                                            <div className="flex justify-center w-full">
+                                              <button
+                                                onClick={() =>
+                                                  setModalCita({
+                                                    open: true,
+                                                    presupuesto: exp.presupuesto,
+                                                    expedienteStr: expStr,
+                                                    citaExistente: cita
+                                                  })
+                                                }
+                                                className="w-full sm:w-1/2 py-2.5 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 hover:text-cyan-200 font-black text-xs sm:text-sm border border-cyan-500/40 uppercase tracking-wider transition-all active:scale-95 shadow cursor-pointer text-center"
+                                              >
+                                                MODIFICAR CITA
+                                              </button>
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )
+                                })()}
+                              </div>
+
+                              {/* ───────────────────────────────────────────────────────────── */}
+                              {/* ICONOS FLOTANTES DE ACCIÓN DEL EXPEDIENTE */}
+                              {/* ───────────────────────────────────────────────────────────── */}
+                              <div className="pt-4 border-t border-slate-800 flex flex-wrap items-center justify-center gap-6">
+                                {/* 1. Icono Flotante "P" (Abre el Presupuesto Completo en Vista A4) */}
+                                <div className="flex flex-col items-center gap-1.5">
+                                  <button
+                                    onClick={() =>
+                                      setModalPresupuesto({
+                                        open: true,
+                                        presupuesto: exp.presupuesto,
+                                        expedienteStr: expStr
+                                      })
+                                    }
+                                    className="w-14 h-14 rounded-full bg-cyan-500/20 hover:bg-cyan-500/30 border-2 border-cyan-400 text-cyan-300 flex items-center justify-center shadow-[0_0_20px_rgba(6,182,212,0.4)] transition-all hover:scale-110 active:scale-95 group"
+                                    title="Ver Presupuesto A4"
+                                  >
+                                    <span className="text-2xl font-black font-mono leading-none group-hover:scale-110 transition-transform">
+                                      P
+                                    </span>
+                                  </button>
+                                  <span className="text-[11px] font-bold text-cyan-300 uppercase tracking-wider">
+                                    Presupuesto
+                                  </span>
+                                </div>
+
+                                {/* 2. Icono de Imágenes (Abre Visor con Likes) */}
+                                <div className="flex flex-col items-center gap-1.5">
+                                  <button
+                                    onClick={() => handleOpenGaleria(0)}
+                                    className="w-14 h-14 rounded-full bg-purple-500/20 hover:bg-purple-500/30 border-2 border-purple-400 text-purple-300 flex items-center justify-center shadow-[0_0_20px_rgba(168,85,247,0.4)] transition-all hover:scale-110 active:scale-95 group"
+                                    title="Ver Galería de Fotos"
+                                  >
+                                    <ImageIcon className="w-6 h-6 group-hover:scale-110 transition-transform" />
+                                  </button>
+                                  <span className="text-[11px] font-bold text-purple-300 uppercase tracking-wider">
+                                    Fotos ({modalGaleria.imagenes.length})
+                                  </span>
+                                </div>
+
+                                {/* 3. Icono de Recibo de Abono (Particulares) o Proforma (Empresas) */}
+                                {hasFactura && exp.factura && (
+                                  <div className="flex flex-col items-center gap-1.5">
+                                    <button
+                                      onClick={() => handleOpenReciboOProforma(exp, expStr)}
+                                      className={`w-14 h-14 rounded-full border-2 flex items-center justify-center transition-all hover:scale-110 active:scale-95 group ${
+                                        isEmpresaCliente(cliente)
+                                          ? 'bg-amber-500/20 hover:bg-amber-500/30 border-amber-400 text-amber-300 shadow-[0_0_20px_rgba(245,158,11,0.4)]'
+                                          : 'bg-blue-500/20 hover:bg-blue-500/30 border-blue-400 text-blue-300 shadow-[0_0_20px_rgba(59,130,246,0.4)]'
+                                      }`}
+                                      title={isEmpresaCliente(cliente) ? 'Ver Factura Proforma' : 'Ver Recibo de Abono'}
+                                    >
+                                      <span className="text-xl font-black font-mono leading-none group-hover:scale-110 transition-transform">
+                                        {isEmpresaCliente(cliente) ? 'FP' : 'R'}
+                                      </span>
+                                    </button>
+                                    <span className={`text-[11px] font-bold uppercase tracking-wider ${isEmpresaCliente(cliente) ? 'text-amber-400' : 'text-blue-400'}`}>
+                                      {isEmpresaCliente(cliente) ? 'Proforma' : 'Recibo'}
+                                    </span>
+                                  </div>
+                                )}
+
+                                {/* 4. Icono de Factura Oficial (Hoja A4 con 'F', verde si está pagada / gris si no) */}
+                                <div className="flex flex-col items-center gap-1.5">
+                                  {hasFactura && exp.factura && facturaPagada ? (
+                                    <button
+                                      onClick={() => setModalFactura({ open: true, factura: exp.factura! })}
+                                      className="w-14 h-14 rounded-full border-2 flex items-center justify-center transition-all hover:scale-110 active:scale-95 group bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-400 text-emerald-300 shadow-[0_0_20px_rgba(16,185,129,0.4)]"
+                                      title="Ver Factura Oficial A4"
+                                    >
+                                      <span className="text-2xl font-black font-mono leading-none group-hover:scale-110 transition-transform">
+                                        F
+                                      </span>
+                                    </button>
+                                  ) : (
+                                    <div
+                                      className="w-14 h-14 rounded-full bg-slate-800/40 border-2 border-slate-700 text-slate-500 flex items-center justify-center cursor-not-allowed opacity-60"
+                                      title={hasFactura ? "Factura pendiente de abono total" : "Factura aún no emitida"}
+                                    >
+                                      <span className="text-2xl font-black font-mono leading-none">F</span>
+                                    </div>
+                                  )}
+                                  <span
+                                    className={`text-[11px] font-bold uppercase tracking-wider ${
+                                      hasFactura && facturaPagada ? 'text-emerald-400' : 'text-slate-500'
+                                    }`}
+                                  >
+                                    {hasFactura && facturaPagada ? 'Factura Oficial' : 'Factura (Pendiente)'}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })
+                  )}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      </main>
+
+      {/* ───────────────────────────────────────────────────────────── */}
+      {/* MODAL: SOLICITAR NUEVO PRESUPUESTO (VENTANA CON FOTOS + DATOS) */}
+      {/* ───────────────────────────────────────────────────────────── */}
+      {modalSolicitudPresupuesto && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200 overflow-y-auto">
+          <div className="bg-slate-900 border-2 border-cyan-500 rounded-3xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-[0_20px_60px_rgba(0,0,0,0.9),0_0_35px_rgba(6,182,212,0.35)] overflow-hidden my-auto">
+            {/* Header del Modal */}
+            <div className="p-4 sm:p-5 border-b border-slate-800 bg-slate-950 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-cyan-500 to-emerald-500 flex items-center justify-center text-slate-950 font-black shadow-md">
+                  <PlusCircle className="w-6 h-6 stroke-[2.5]" />
+                </div>
+                <div>
+                  <h3 className="text-lg sm:text-xl font-black text-white uppercase tracking-wider">
+                    Solicitar Presupuesto
+                  </h3>
+                  <p className="text-xs text-cyan-400 font-medium">DM CAR · Presupuesto a medida</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setModalSolicitudPresupuesto(false)}
+                className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Formulario */}
+            <form onSubmit={handleSubmitSolicitudPresupuesto} className="flex-1 flex flex-col overflow-hidden">
+              <div className="p-5 sm:p-6 overflow-y-auto flex-1 bg-slate-950/70 space-y-5">
+                {/* Datos del Vehículo (TAMAÑO x2 ACTUAL) */}
+                <div>
+                  <h4 className="text-sm font-black uppercase tracking-wider text-cyan-400 mb-3 flex items-center gap-2">
+                    <span>1. Datos del Vehículo</span>
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="text-xs sm:text-sm font-bold uppercase text-slate-300 block mb-1">Marca</label>
+                      <input
+                        type="text"
+                        value={formMarca}
+                        onChange={(e) => setFormMarca(e.target.value)}
+                        placeholder="Ej. Audi"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-1.5 text-xl sm:text-2xl text-white font-black focus:border-cyan-400 outline-none leading-normal"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs sm:text-sm font-bold uppercase text-slate-300 block mb-1">Modelo</label>
+                      <input
+                        type="text"
+                        value={formModelo}
+                        onChange={(e) => setFormModelo(e.target.value)}
+                        placeholder="Ej. A4 2.0 TDI"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-1.5 text-xl sm:text-2xl text-white font-black focus:border-cyan-400 outline-none leading-normal"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs sm:text-sm font-bold uppercase text-slate-300 block mb-1">Matrícula</label>
+                      <input
+                        type="text"
+                        value={formMatricula}
+                        onChange={(e) => setFormMatricula(e.target.value.toUpperCase())}
+                        placeholder="1234 ABC"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-1.5 text-xl sm:text-2xl text-cyan-300 font-mono font-black uppercase focus:border-cyan-400 outline-none leading-normal"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Subida de Imágenes (Máximo 10) */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-sm font-black uppercase tracking-wider text-cyan-400 flex items-center gap-2">
+                      <span>2. AÑADE TUS IMÁGENES</span>
+                    </h4>
+                    <span className="text-xs font-bold text-slate-400">
+                      {formFotos.length} / 10 imágenes
+                    </span>
+                  </div>
+
+                  {/* Input para Galería */}
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={handleFileSelect}
+                    accept="image/*"
+                    multiple
+                    className="hidden"
+                  />
+
+                  {/* Input para Cámara del Dispositivo */}
+                  <input
+                    type="file"
+                    ref={cameraInputRef}
+                    onChange={handleFileSelect}
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                  />
+
+                  {/* Galería de fotos añadidas */}
+                  {formFotos.length > 0 && (
+                    <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2 mb-3">
+                      {formFotos.map((foto, idx) => (
+                        <div
+                          key={idx}
+                          className="relative aspect-square rounded-xl overflow-hidden border border-cyan-500/40 bg-slate-900 group shadow-sm"
+                        >
+                          <img src={foto.preview} alt={`Foto ${idx + 1}`} className="w-full h-full object-cover" />
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveFoto(idx)}
+                            className="absolute top-1 right-1 w-5 h-5 rounded-full bg-rose-600 hover:bg-rose-500 text-white flex items-center justify-center shadow-lg transition-transform active:scale-90"
+                            title="Eliminar foto"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Botones CAPTURAR y ADJUNTAR CENTRADOS, ANCHURA x1.5 Y LÍNEA CONTINUA GRIS CLARO 2PX */}
+                  {formFotos.length < 10 && (
+                    <div className="flex flex-wrap items-center justify-center gap-4 w-full pt-1">
+                      {/* 1. Botón CAPTURAR con Cámara */}
+                      <button
+                        type="button"
+                        onClick={() => cameraInputRef.current?.click()}
+                        className="w-36 sm:w-44 py-3 px-3 rounded-2xl border-2 border-slate-400 hover:border-slate-200 bg-slate-900/90 hover:bg-slate-800 text-white flex items-center justify-center gap-2 transition-all group active:scale-95 cursor-pointer shadow-md text-center"
+                        title="Tomar foto con la cámara"
+                      >
+                        <Camera className="w-5 h-5 group-hover:scale-110 text-cyan-400 transition-transform shrink-0" />
+                        <span className="text-xs sm:text-sm font-black uppercase tracking-wider">CAPTURAR</span>
+                      </button>
+
+                      {/* 2. Botón ADJUNTAR desde Galería */}
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="w-36 sm:w-44 py-3 px-3 rounded-2xl border-2 border-slate-400 hover:border-slate-200 bg-slate-900/90 hover:bg-slate-800 text-white flex items-center justify-center gap-2 transition-all group active:scale-95 cursor-pointer shadow-md text-center"
+                        title="Adjuntar fotos desde la galería"
+                      >
+                        <Upload className="w-5 h-5 group-hover:scale-110 text-teal-400 transition-transform shrink-0" />
+                        <span className="text-xs sm:text-sm font-black uppercase tracking-wider">ADJUNTAR</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Campo Extenso de Reparación Solicitada */}
+                <div>
+                  <h4 className="text-sm font-black uppercase tracking-wider text-cyan-400 mb-2">
+                    3. DESCRIBE LA REPARACIÓN
+                  </h4>
+                  <textarea
+                    rows={4}
+                    value={formDescripcion}
+                    onChange={(e) => setFormDescripcion(e.target.value)}
+                    placeholder="Describe con detalle los trabajos que necesitas realizar en el vehículo (chapa, pintura, mecánica, ruidos extraños, revisión, etc.)..."
+                    className="w-full bg-slate-900 border border-slate-700 rounded-2xl p-4 text-sm text-white focus:border-cyan-400 outline-none resize-none leading-relaxed shadow-inner"
+                    required
+                  />
+                </div>
+
+                {/* 4. HORA Y DÍA APROXIMADO DE ENTREGA (09:00 a 18:00) */}
+                <div className="space-y-3">
+                  <h4 className="text-sm font-black uppercase tracking-wider text-cyan-400 flex items-center justify-between">
+                    <span>4. HORA APROXIMADA Y DÍA DE ENTREGA</span>
+                    <span className="text-xs font-mono font-bold text-cyan-300">
+                      Máx. 18:00 h
+                    </span>
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* Selector de Hora */}
+                    <div className="p-3 rounded-2xl bg-slate-900 border border-slate-700 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Clock className="w-4 h-4 text-cyan-400 shrink-0" />
+                        <span className="text-xs font-bold text-slate-300 uppercase">Hora aprox:</span>
+                      </div>
+                      <select
+                        value={formPreferenciaHora}
+                        onChange={(e) => setFormPreferenciaHora(e.target.value)}
+                        className="bg-slate-950 border border-cyan-500/40 text-cyan-300 font-mono font-black text-xs px-2.5 py-1.5 rounded-xl outline-none focus:border-cyan-400"
+                      >
+                        {TIME_SLOTS.map((slot) => (
+                          <option key={slot} value={slot}>
+                            {slot} h
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Selector de Fecha */}
+                    <div className="p-3 rounded-2xl bg-slate-900 border border-slate-700 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Calendar className="w-4 h-4 text-cyan-400 shrink-0" />
+                        <span className="text-xs font-bold text-slate-300 uppercase">Día aprox:</span>
+                      </div>
+                      <input
+                        type="date"
+                        min={new Date().toISOString().split('T')[0]}
+                        value={formPreferenciaFecha}
+                        onChange={(e) => setFormPreferenciaFecha(e.target.value)}
+                        className="bg-slate-950 border border-cyan-500/40 text-cyan-300 font-mono font-bold text-xs px-2.5 py-1.5 rounded-xl outline-none focus:border-cyan-400"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Botones del Footer: CANCELAR - ENVIAR repartiéndose el ancho equitativamente */}
+              <div className="p-3 sm:p-4 bg-slate-950 border-t border-slate-800 grid grid-cols-2 gap-3 w-full">
+                <button
+                  type="button"
+                  onClick={() => setModalSolicitudPresupuesto(false)}
+                  className="w-full py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-black text-xs sm:text-sm uppercase tracking-wider text-center transition-colors cursor-pointer"
+                >
+                  CANCELAR
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={enviandoSolicitud}
+                  className="w-full py-2.5 rounded-xl bg-black/90 hover:bg-black text-white font-black uppercase tracking-wider border-2 border-cyan-200 transition-all active:scale-[0.99] flex items-center justify-center text-center cursor-pointer disabled:opacity-50 text-xs sm:text-sm"
+                >
+                  <span>{enviandoSolicitud ? 'ENVIANDO...' : 'ENVIAR'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ───────────────────────────────────────────────────────────── */}
+      {/* MODAL: FORMULARIO DE CITA / ENTREGA DE VEHÍCULO (CALENDARIO + HORA) */}
+      {/* ───────────────────────────────────────────────────────────── */}
+      {modalCita.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-slate-900 border-2 border-cyan-500 rounded-3xl w-full max-w-md max-h-[95vh] flex flex-col shadow-[0_20px_60px_rgba(0,0,0,0.9),0_0_30px_rgba(6,182,212,0.3)] overflow-hidden">
+            {/* Header */}
+            <div className="p-4 border-b border-slate-800 bg-slate-950 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-cyan-500/20 border border-cyan-400 flex items-center justify-center text-cyan-400 font-bold">
+                  <Calendar className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-black text-white uppercase tracking-wider">
+                    {modalCita.citaExistente ? 'Modificar Fecha de Entrega' : 'Solicitar Fecha de Entrega'}
+                  </h3>
+                  <p className="text-xs text-cyan-400 font-mono">EXP: {modalCita.expedienteStr}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setModalCita({ open: false, presupuesto: null, expedienteStr: '', citaExistente: null })}
+                className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Selector Calendario */}
+            <div className="p-4 overflow-y-auto flex-1 bg-slate-950/70 space-y-4">
+              <div className="w-full bg-slate-900 border border-slate-800 rounded-2xl p-3 shadow-lg">
+                {/* Cabecera del Mes */}
+                <div className="flex items-center justify-between mb-2">
+                  <button
+                    onClick={handlePrevMonth}
+                    className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-all active:scale-90"
+                  >
+                    <ChevronLeft className="w-6 h-6 text-cyan-400" />
+                  </button>
+                  <span className="font-black text-lg text-white tracking-widest uppercase">
+                    {MESES[currentDate.getMonth()]} {currentDate.getFullYear()}
+                  </span>
+                  <button
+                    onClick={handleNextMonth}
+                    className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-all active:scale-90"
+                  >
+                    <ChevronRight className="w-6 h-6 text-cyan-400" />
+                  </button>
+                </div>
+
+                {/* Días de la semana */}
+                <div className="grid grid-cols-7 gap-1 text-center font-bold text-xs mb-1 text-slate-400">
+                  {DIAS_SEMANA.map((d, i) => (
+                    <div key={i} className={d === 'S' ? 'text-blue-400' : d === 'D' ? 'text-rose-500' : ''}>
+                      {d}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Grid de días */}
+                <div className="grid grid-cols-7 gap-1 text-center">
+                  {Array.from({ length: firstDayIndex }).map((_, i) => (
+                    <div key={`empty-${i}`} className="h-8" />
+                  ))}
+
+                  {Array.from({ length: daysInMonth }).map((_, i) => {
+                    const dayNum = i + 1
+                    const isSelected = selectedDay === dayNum
+                    const cellDate = new Date(currentDate.getFullYear(), currentDate.getMonth(), dayNum)
+                    
+                    // Fecha base mínima permitida (no anterior a la fecha original si se modifica, o a hoy si es nueva)
+                    const minDate = modalCita.citaExistente?.fecha ? new Date(modalCita.citaExistente.fecha) : new Date()
+                    minDate.setHours(0, 0, 0, 0)
+                    cellDate.setHours(0, 0, 0, 0)
+                    const isPast = cellDate < minDate
+
+                    const isToday =
+                      dayNum === new Date().getDate() &&
+                      currentDate.getMonth() === new Date().getMonth() &&
+                      currentDate.getFullYear() === new Date().getFullYear()
+
+                    return (
+                      <button
+                        key={dayNum}
+                        disabled={isPast}
+                        onClick={() => !isPast && setSelectedDay(dayNum)}
+                        className={`h-8 rounded-xl text-sm font-bold flex items-center justify-center transition-all ${
+                          isPast
+                            ? 'opacity-20 cursor-not-allowed text-slate-600'
+                            : isSelected
+                            ? 'bg-cyan-500 text-slate-950 shadow-[0_0_12px_rgba(6,182,212,0.8)] scale-105 ring-2 ring-white active:scale-90 cursor-pointer'
+                            : isToday
+                            ? 'text-cyan-300 font-black border border-cyan-500/40 active:scale-90 cursor-pointer'
+                            : 'hover:bg-slate-800 text-slate-300 active:scale-90 cursor-pointer'
+                        }`}
+                      >
+                        {dayNum}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              {/* Selector de Hora */}
+              <div className="w-full p-3 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Clock className="w-5 h-5 text-cyan-400" />
+                  <span className="font-bold text-sm text-slate-300 uppercase">Hora de Entrega:</span>
+                </div>
+
+                <select
+                  value={TIME_SLOTS[selectedTimeIndex] || '09:00'}
+                  onChange={(e) => {
+                    const idx = TIME_SLOTS.indexOf(e.target.value)
+                    if (idx !== -1) setSelectedTimeIndex(idx)
+                  }}
+                  className="bg-slate-950 border border-cyan-500/40 text-cyan-300 font-mono font-black text-base px-3 py-1.5 rounded-xl outline-none focus:border-cyan-400"
+                >
+                  {TIME_SLOTS.map((slot) => (
+                    <option key={slot} value={slot}>
+                      {slot} h
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="p-3 bg-cyan-950/30 border border-cyan-500/30 rounded-2xl text-xs text-cyan-300 leading-relaxed">
+                💡 Al enviar la solicitud, el taller recibirá tu propuesta y te confirmará o propondrá un ajuste si es necesario.
+              </div>
+            </div>
+
+            {/* Footer de Acciones */}
+            <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center justify-end gap-3">
+              <button
+                onClick={() => setModalCita({ open: false, presupuesto: null, expedienteStr: '', citaExistente: null })}
+                className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs uppercase tracking-wider"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSolicitarCita}
+                disabled={guardandoCita}
+                className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black text-xs shadow-[0_0_15px_rgba(16,185,129,0.5)] border-2 border-emerald-400 uppercase tracking-wider flex items-center gap-2 transition-all active:scale-95 disabled:opacity-50"
+              >
+                {guardandoCita ? <Loader2 className="w-4 h-4 animate-spin" /> : <CalendarClock className="w-4 h-4" />}
+                <span>{modalCita.citaExistente ? 'Enviar Modificación' : 'Solicitar Cita'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ───────────────────────────────────────────────────────────── */}
+      {/* MODAL: VISOR DE PRESUPUESTO (VISTA A4 + ACCIONES) */}
+      {/* ───────────────────────────────────────────────────────────── */}
+      {modalPresupuesto.open && modalPresupuesto.presupuesto && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-slate-900 border-2 border-cyan-500 rounded-3xl w-full max-w-3xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Cabecera Modal */}
+            <div className="p-4 sm:p-6 border-b border-slate-800 flex items-center justify-between bg-slate-950">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-400 flex items-center justify-center text-cyan-400 font-bold text-xl">
+                  P
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">
+                    Presupuesto {modalPresupuesto.presupuesto.numero}
+                  </h3>
+                  <p className="text-xs text-cyan-400 font-mono">
+                    EXP: {modalPresupuesto.expedienteStr}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setModalPresupuesto({ open: false, presupuesto: null, expedienteStr: '' })}
+                className="w-9 h-9 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Contenido Visual A4 */}
+            <div className="p-6 overflow-y-auto flex-1 bg-slate-950/60 space-y-6">
+              <div className="bg-white text-slate-900 p-6 sm:p-8 rounded-2xl shadow-xl space-y-6">
+                <div className="flex justify-between items-start border-b border-slate-200 pb-4">
+                  <div>
+                    <h2 className="text-xl font-extrabold text-slate-900">{config?.nombre_empresa || 'DM CAR'}</h2>
+                    <p className="text-xs text-slate-500">Taller Mecánico y Chapa</p>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-xs font-bold text-slate-400 block uppercase">Presupuesto</span>
+                    <span className="text-lg font-black text-cyan-600">{modalPresupuesto.presupuesto.numero}</span>
+                    <span className="text-xs text-slate-500 block">
+                      {new Date(modalPresupuesto.presupuesto.created_at).toLocaleDateString('es-ES')}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 text-xs">
+                  <div>
+                    <span className="font-bold text-slate-400 uppercase block">Cliente</span>
+                    <p className="font-bold text-slate-900 text-sm">{cliente.nombre}</p>
+                    {cliente.dni && <p className="text-slate-600">NIF/CIF: {cliente.dni}</p>}
+                    {cliente.telefono && <p className="text-slate-600">Tel: {cliente.telefono}</p>}
+                  </div>
+                  <div className="text-right">
+                    <span className="font-bold text-slate-400 uppercase block">Vehículo</span>
+                    <p className="font-bold text-slate-900 text-sm">
+                      {vehiculo.marca} {vehiculo.modelo}
+                    </p>
+                    <p className="text-cyan-700 font-mono font-bold">{vehiculo.matricula}</p>
+                  </div>
+                </div>
+
+                {/* Conceptos */}
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b-2 border-slate-300 text-slate-700 font-bold uppercase">
+                      <th className="pb-2 text-left">Concepto</th>
+                      <th className="pb-2 text-center w-12">Cant.</th>
+                      <th className="pb-2 text-right w-20">Precio</th>
+                      <th className="pb-2 text-right w-20">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 text-slate-800">
+                    {(modalPresupuesto.presupuesto.conceptos || []).map((c, i) => (
+                      <tr key={i}>
+                        <td className="py-2 pr-2">{c.descripcion}</td>
+                        <td className="py-2 text-center text-slate-600">{c.cantidad}</td>
+                        <td className="py-2 text-right text-slate-600">{c.precio.toFixed(2)} €</td>
+                        <td className="py-2 text-right font-semibold">{(c.cantidad * c.precio).toFixed(2)} €</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                {/* Totales */}
+                <div className="border-t-2 border-slate-300 pt-3 flex justify-end">
+                  <div className="text-right space-y-1 w-48">
+                    <div className="flex justify-between text-xs text-slate-600">
+                      <span>Base:</span>
+                      <span className="font-medium">
+                        {(
+                          (modalPresupuesto.presupuesto.conceptos || []).reduce((acc, c) => acc + c.cantidad * c.precio, 0)
+                        ).toFixed(2)}{' '}
+                        €
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-xs text-slate-600">
+                      <span>IVA (21%):</span>
+                      <span className="font-medium">
+                        {(
+                          (modalPresupuesto.presupuesto.conceptos || []).reduce((acc, c) => acc + c.cantidad * c.precio, 0) *
+                          0.21
+                        ).toFixed(2)}{' '}
+                        €
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-base font-black text-slate-900 border-t border-slate-300 pt-1">
+                      <span>TOTAL:</span>
+                      <span className="text-cyan-700">{modalPresupuesto.presupuesto.total.toFixed(2)} €</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Pie del Modal con Botones de Acción (Descargar / Enviar / Imprimir) */}
+            <div className="p-4 sm:p-6 border-t border-slate-800 bg-slate-950 flex flex-wrap items-center justify-center gap-3">
+              <button
+                onClick={() => handleDownloadPresupuesto(modalPresupuesto.presupuesto!, modalPresupuesto.expedienteStr)}
+                className="px-5 py-3 rounded-2xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-sm shadow-[0_0_15px_rgba(6,182,212,0.4)] flex items-center gap-2 transition-all active:scale-95 uppercase tracking-wider"
+              >
+                <Download className="w-4 h-4" /> Descargar PDF
+              </button>
+
+              <button
+                onClick={() => handleSendPresupuesto(modalPresupuesto.presupuesto!, modalPresupuesto.expedienteStr)}
+                disabled={actionLoading}
+                className="px-5 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm border border-slate-700 flex items-center gap-2 transition-all active:scale-95 uppercase tracking-wider disabled:opacity-50"
+              >
+                {actionLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Enviar por Email
+              </button>
+
+              <button
+                onClick={() => handlePrintPresupuesto(modalPresupuesto.presupuesto!, modalPresupuesto.expedienteStr)}
+                className="px-5 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-sm border border-slate-700 flex items-center gap-2 transition-all active:scale-95 uppercase tracking-wider"
+              >
+                <Printer className="w-4 h-4" /> Imprimir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ───────────────────────────────────────────────────────────── */}
+      {/* MODAL: VISOR DE FACTURA (VISTA A4 + ESTADO DEL ABONO) */}
+      {/* ───────────────────────────────────────────────────────────── */}
+      {modalFactura.open && modalFactura.factura && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-slate-900 border-2 border-emerald-500 rounded-3xl w-full max-w-3xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Cabecera Modal */}
+            <div className="p-4 sm:p-6 border-b border-slate-800 flex items-center justify-between bg-slate-950">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-400 flex items-center justify-center text-emerald-400 font-bold text-xl">
+                  F
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">Factura {modalFactura.factura.numero}</h3>
+                  <span
+                    className={`text-xs px-2.5 py-0.5 rounded-full font-bold uppercase ${
+                      modalFactura.factura.estado_cobro === 'pagada'
+                        ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
+                        : modalFactura.factura.estado_cobro === 'parcial'
+                        ? 'bg-blue-500/20 text-blue-400 border border-blue-500/40'
+                        : 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
+                    }`}
+                  >
+                    {modalFactura.factura.estado_cobro}
+                  </span>
+                </div>
+              </div>
+              <button
+                onClick={() => setModalFactura({ open: false, factura: null })}
+                className="w-9 h-9 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Contenido Visual A4 Factura */}
+            <div className="p-6 overflow-y-auto flex-1 bg-slate-950/60 space-y-6">
+              <div className="bg-white text-slate-900 p-6 sm:p-8 rounded-2xl shadow-xl space-y-6">
+                <div className="flex justify-between items-start border-b border-slate-200 pb-4">
+                  <div>
+                    <h2 className="text-xl font-extrabold text-slate-900">{config?.nombre_empresa || 'DM CAR'}</h2>
+                    <p className="text-xs text-slate-500">Factura Oficial</p>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-xs font-bold text-slate-400 block uppercase">Nº Factura</span>
+                    <span className="text-lg font-black text-emerald-600">{modalFactura.factura.numero}</span>
+                    <span className="text-xs text-slate-500 block">
+                      {new Date(modalFactura.factura.fecha).toLocaleDateString('es-ES')}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 text-xs">
+                  <div>
+                    <span className="font-bold text-slate-400 uppercase block">Cliente</span>
+                    <p className="font-bold text-slate-900 text-sm">{cliente.nombre}</p>
+                    {cliente.dni && <p className="text-slate-600">NIF/CIF: {cliente.dni}</p>}
+                  </div>
+                  <div className="text-right">
+                    <span className="font-bold text-slate-400 uppercase block">Vehículo</span>
+                    <p className="font-bold text-slate-900 text-sm">
+                      {vehiculo.marca} {vehiculo.modelo}
+                    </p>
+                    <p className="text-emerald-700 font-mono font-bold">{vehiculo.matricula}</p>
+                  </div>
+                </div>
+
+                {/* Conceptos */}
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b-2 border-slate-300 text-slate-700 font-bold uppercase">
+                      <th className="pb-2 text-left">Concepto</th>
+                      <th className="pb-2 text-center w-12">Cant.</th>
+                      <th className="pb-2 text-right w-20">Precio</th>
+                      <th className="pb-2 text-right w-20">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 text-slate-800">
+                    {(modalFactura.factura.conceptos || []).map((c, i) => (
+                      <tr key={i}>
+                        <td className="py-2 pr-2">{c.descripcion}</td>
+                        <td className="py-2 text-center text-slate-600">{c.cantidad}</td>
+                        <td className="py-2 text-right text-slate-600">{c.precio.toFixed(2)} €</td>
+                        <td className="py-2 text-right font-semibold">{(c.cantidad * c.precio).toFixed(2)} €</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                {/* Totales */}
+                <div className="border-t-2 border-slate-300 pt-3 flex justify-end">
+                  <div className="text-right space-y-1 w-48">
+                    <div className="flex justify-between text-base font-black text-slate-900 border-t border-slate-300 pt-1">
+                      <span>TOTAL FACTURA:</span>
+                      <span className="text-emerald-700">{modalFactura.factura.total.toFixed(2)} €</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Pie del Modal: Botones de Acción + BOTÓN "ESTADO DEL ABONO" */}
+            <div className="p-4 sm:p-6 border-t border-slate-800 bg-slate-950 flex flex-wrap items-center justify-between gap-3">
+              <button
+                onClick={() => handleOpenEstadoAbono(modalFactura.factura!)}
+                className="px-5 py-3 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-sm shadow-[0_0_15px_rgba(245,158,11,0.4)] flex items-center gap-2 transition-all active:scale-95 uppercase tracking-wider"
+              >
+                <Euro className="w-4 h-4" /> Estado del Abono
+              </button>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => handleDownloadFactura(modalFactura.factura!)}
+                  className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md flex items-center gap-1.5 transition-all active:scale-95 uppercase tracking-wider"
+                >
+                  <Download className="w-3.5 h-3.5" /> Descargar PDF
+                </button>
+
+                <button
+                  onClick={() => handleSendFactura(modalFactura.factura!)}
+                  disabled={actionLoading}
+                  className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs border border-slate-700 flex items-center gap-1.5 transition-all active:scale-95 uppercase tracking-wider disabled:opacity-50"
+                >
+                  {actionLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />} Enviar Email
+                </button>
+
+                <button
+                  onClick={() => handlePrintFactura(modalFactura.factura!)}
+                  className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs border border-slate-700 flex items-center gap-1.5 transition-all active:scale-95 uppercase tracking-wider"
+                >
+                  <Printer className="w-3.5 h-3.5" /> Imprimir
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ───────────────────────────────────────────────────────────── */}
+      {/* MODAL: ESTADO DEL ABONO (SOLO LECTURA) */}
+      {/* ───────────────────────────────────────────────────────────── */}
+      {modalEstadoAbono.open && modalEstadoAbono.factura && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-slate-900 border-2 border-amber-500 rounded-3xl w-full max-w-lg shadow-[0_20px_60px_rgba(0,0,0,0.9),0_0_30px_rgba(245,158,11,0.3)] overflow-hidden">
+            <div className="p-5 border-b border-slate-800 bg-slate-950 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-amber-500/20 border border-amber-400 flex items-center justify-center text-amber-400">
+                  <Euro className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-black text-white uppercase tracking-wider">
+                    Estado del Abono
+                  </h3>
+                  <p className="text-xs text-slate-400 font-mono">Factura: {modalEstadoAbono.factura.numero}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setModalEstadoAbono({ open: false, factura: null, cobros: [] })}
+                className="w-8 h-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5 bg-slate-950/80 text-sm">
+              <div className="grid grid-cols-3 gap-3 text-center">
+                <div className="p-3 bg-slate-900 rounded-2xl border border-slate-800">
+                  <span className="text-[10px] text-slate-400 uppercase font-bold block">Total Factura</span>
+                  <span className="text-base font-black text-white tabular-nums">
+                    {modalEstadoAbono.factura.total.toFixed(2)} €
+                  </span>
+                </div>
+                <div className="p-3 bg-emerald-950/40 rounded-2xl border border-emerald-500/40">
+                  <span className="text-[10px] text-emerald-400 uppercase font-bold block">Abonado</span>
+                  <span className="text-base font-black text-emerald-400 tabular-nums">
+                    {modalEstadoAbono.factura.total_abonado.toFixed(2)} €
+                  </span>
+                </div>
+                <div className="p-3 bg-rose-950/40 rounded-2xl border border-rose-500/40">
+                  <span className="text-[10px] text-rose-400 uppercase font-bold block">Pendiente</span>
+                  <span className="text-base font-black text-rose-400 tabular-nums">
+                    {Math.max(0, modalEstadoAbono.factura.total - modalEstadoAbono.factura.total_abonado).toFixed(2)} €
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between p-3.5 rounded-2xl bg-slate-900 border border-slate-800">
+                <span className="text-xs font-bold text-slate-400 uppercase">Estado Actual</span>
+                <span
+                  className={`text-xs font-black uppercase px-3 py-1 rounded-full ${
+                    modalEstadoAbono.factura.estado_cobro === 'pagada'
+                      ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50'
+                      : modalEstadoAbono.factura.estado_cobro === 'parcial'
+                      ? 'bg-blue-500/20 text-blue-400 border border-blue-500/50'
+                      : 'bg-amber-500/20 text-amber-400 border border-amber-500/50'
+                  }`}
+                >
+                  {modalEstadoAbono.factura.estado_cobro === 'pagada'
+                    ? 'PAGADA COMPLETA'
+                    : modalEstadoAbono.factura.estado_cobro === 'parcial'
+                    ? 'PAGO PARCIAL'
+                    : 'PENDIENTE DE PAGO'}
+                </span>
+              </div>
+
+              <div>
+                <h4 className="text-xs font-bold uppercase tracking-widest text-slate-400 mb-2">
+                  Historial de Pagos Registrados
+                </h4>
+                {modalEstadoAbono.cobros.length === 0 ? (
+                  <p className="text-xs text-slate-500 italic p-3 bg-slate-900/50 rounded-xl">
+                    No constan abonos registrados aún.
+                  </p>
+                ) : (
+                  <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                    {modalEstadoAbono.cobros.map((c) => (
+                      <div
+                        key={c.id}
+                        className="flex items-center justify-between p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 text-xs"
+                      >
+                        <div>
+                          <span className="font-semibold text-white">
+                            {new Date(c.fecha).toLocaleDateString('es-ES', {
+                              day: '2-digit',
+                              month: 'short',
+                              year: 'numeric'
+                            })}
+                          </span>
+                          {c.metodo && <span className="text-slate-400 ml-2">({c.metodo})</span>}
+                        </div>
+                        <span className="font-black text-emerald-400 tabular-nums">+{c.importe.toFixed(2)} €</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="p-4 bg-slate-950 border-t border-slate-800 flex justify-end">
+              <button
+                onClick={() => setModalEstadoAbono({ open: false, factura: null, cobros: [] })}
+                className="px-6 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs uppercase tracking-wider transition-colors"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ───────────────────────────────────────────────────────────── */}
+      {/* MODAL: VISOR DE IMÁGENES CON SISTEMA "ME GUSTA" */}
+      {/* ───────────────────────────────────────────────────────────── */}
+      {modalGaleria.open && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-slate-900 border-2 border-purple-500 rounded-3xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-slate-800 bg-slate-950 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-purple-500/20 border border-purple-400 flex items-center justify-center text-purple-400">
+                  <ImageIcon className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-white">Galería de Imágenes del Vehículo</h3>
+                  <p className="text-xs text-purple-300 font-medium">
+                    {modalGaleria.imagenes.length} {modalGaleria.imagenes.length === 1 ? 'fotografía' : 'fotografías'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setModalGaleria((prev) => ({ ...prev, open: false }))}
+                className="w-9 h-9 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 overflow-y-auto flex-1 bg-slate-950/80">
+              {modalGaleria.imagenes.length === 0 ? (
+                <div className="text-center py-16">
+                  <ImageIcon className="w-12 h-12 text-slate-600 mx-auto mb-3" />
+                  <p className="text-slate-400 text-sm">No hay imágenes disponibles para este expediente.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-5">
+                  {modalGaleria.imagenes.map((imgUrl, idx) => {
+                    const isLiked = !!likedImages[imgUrl]
+                    return (
+                      <div
+                        key={idx}
+                        className="group relative rounded-2xl overflow-hidden border-2 border-slate-800 bg-slate-900 shadow-md transition-all hover:border-purple-500/60"
+                      >
+                        <div className="aspect-square w-full bg-slate-950 overflow-hidden">
+                          <img
+                            src={imgUrl}
+                            alt={`Foto ${idx + 1}`}
+                            className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                          />
+                        </div>
+
+                        <div className="p-3 bg-slate-900/90 backdrop-blur-md flex items-center justify-between border-t border-slate-800">
+                          <span className="text-xs font-mono text-slate-400 font-semibold">Foto #{idx + 1}</span>
+
+                          <button
+                            onClick={() => handleToggleLike(imgUrl)}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all active:scale-90 ${
+                              isLiked
+                                ? 'bg-rose-500 text-white shadow-[0_0_12px_rgba(244,63,94,0.6)]'
+                                : 'bg-slate-800 text-slate-300 hover:bg-slate-700 hover:text-white'
+                            }`}
+                            title={isLiked ? 'Quitar de favoritos' : 'Me gusta'}
+                          >
+                            <Heart className={`w-4 h-4 ${isLiked ? 'fill-white text-white' : 'text-slate-400'}`} />
+                            <span>{isLiked ? 'Te gusta' : 'Me gusta'}</span>
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 bg-slate-950 border-t border-slate-800 flex justify-end">
+              <button
+                onClick={() => setModalGaleria((prev) => ({ ...prev, open: false }))}
+                className="px-6 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer"
+              >
+                Cerrar Galería
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ───────────────────────────────────────────────────────────── */}
+      {/* MODAL: RECIBO DE ABONO (PARTICULARES - VISTA A4) */}
+      {/* ───────────────────────────────────────────────────────────── */}
+      {modalReciboAbono.open && modalReciboAbono.factura && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-slate-900 border-2 border-blue-500 rounded-3xl w-full max-w-3xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Cabecera */}
+            <div className="p-4 sm:p-6 border-b border-slate-800 flex items-center justify-between bg-slate-950">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-500/20 border border-blue-400 flex items-center justify-center text-blue-400 font-bold text-xl">
+                  R
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white uppercase tracking-wide">RECIBO DE ABONO A CUENTA</h3>
+                  <p className="text-xs text-blue-300 font-mono">EXP: {modalReciboAbono.expedienteStr}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setModalReciboAbono({ open: false, factura: null, cobros: [], expedienteStr: '' })}
+                className="w-9 h-9 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Visual A4 */}
+            <div className="p-6 overflow-y-auto flex-1 bg-slate-950/60 space-y-4 text-slate-900">
+              <div className="bg-white p-6 sm:p-8 rounded-2xl shadow-xl space-y-6">
+                <div className="flex justify-between items-start border-b border-slate-200 pb-4">
+                  <div>
+                    <h2 className="text-xl font-black text-slate-900">{config?.nombre_empresa || 'DM CAR'}</h2>
+                    <p className="text-xs text-slate-500">JUSTIFICANTE DE PAGO PARCIAL</p>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-xs font-bold text-slate-400 uppercase block">Expediente</span>
+                    <span className="text-lg font-black text-blue-600">{modalReciboAbono.expedienteStr}</span>
+                    <span className="text-xs text-slate-500 block">
+                      {new Date().toLocaleDateString('es-ES')}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 text-xs">
+                  <div>
+                    <span className="font-bold text-slate-400 uppercase block">Cliente</span>
+                    <p className="font-bold text-slate-900 text-sm">{cliente.nombre}</p>
+                    {cliente.dni && <p className="text-slate-600">DNI/NIE: {cliente.dni}</p>}
+                  </div>
+                  <div className="text-right">
+                    <span className="font-bold text-slate-400 uppercase block">Vehículo</span>
+                    <p className="font-bold text-slate-900 text-sm">{vehiculo.marca} {vehiculo.modelo}</p>
+                    <p className="text-blue-700 font-mono font-bold">{vehiculo.matricula}</p>
+                  </div>
+                </div>
+
+                {/* Resumen Económico */}
+                <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-2 text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Importe Total Reparación:</span>
+                    <span className="font-bold text-slate-900">{modalReciboAbono.factura.total.toFixed(2)} €</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-600">Total Abonado Acumulado:</span>
+                    <span className="font-bold text-emerald-600">{(modalReciboAbono.factura.total_abonado || 0).toFixed(2)} €</span>
+                  </div>
+                  <div className="flex justify-between border-t border-slate-200 pt-2 font-bold text-sm">
+                    <span className="text-rose-600">Saldo Pendiente:</span>
+                    <span className="text-rose-600">{Math.max(0, modalReciboAbono.factura.total - (modalReciboAbono.factura.total_abonado || 0)).toFixed(2)} €</span>
+                  </div>
+                </div>
+
+                <div className="text-[11px] text-slate-500 italic border-t border-slate-200 pt-3">
+                  * Este documento es un justificante de entrega a cuenta y no constituye factura oficial. La factura oficial se emitirá tras la liquidación completa del importe.
+                </div>
+              </div>
+            </div>
+
+            {/* Acciones */}
+            <div className="p-4 bg-slate-950 border-t border-slate-800 flex justify-center gap-3">
+              <button
+                onClick={() => handleDownloadRecibo(modalReciboAbono.factura!, modalReciboAbono.cobros, modalReciboAbono.expedienteStr)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+              >
+                <Download className="w-4 h-4 text-blue-400" /> Descargar PDF
+              </button>
+              <button
+                onClick={() => handleSendRecibo(modalReciboAbono.factura!, modalReciboAbono.cobros, modalReciboAbono.expedienteStr)}
+                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+              >
+                <Send className="w-4 h-4" /> Enviar por Email
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ───────────────────────────────────────────────────────────── */}
+      {/* MODAL: FACTURA PROFORMA (EMPRESAS - VISTA A4 FPAA0000) */}
+      {/* ───────────────────────────────────────────────────────────── */}
+      {modalProforma.open && modalProforma.factura && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="bg-slate-900 border-2 border-amber-500 rounded-3xl w-full max-w-3xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Cabecera */}
+            <div className="p-4 sm:p-6 border-b border-slate-800 flex items-center justify-between bg-slate-950">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-400 flex items-center justify-center text-amber-400 font-bold text-xl">
+                  FP
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white uppercase tracking-wide">FACTURA PROFORMA</h3>
+                  <p className="text-xs text-amber-300 font-mono">
+                    Nº: {modalProforma.factura.numero_proforma || 'FPAA0000'} · EXP: {modalProforma.expedienteStr}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setModalProforma({ open: false, factura: null, cobros: [], expedienteStr: '' })}
+                className="w-9 h-9 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Visual A4 */}
+            <div className="p-6 overflow-y-auto flex-1 bg-slate-950/60 space-y-4 text-slate-900">
+              <div className="bg-white p-6 sm:p-8 rounded-2xl shadow-xl space-y-6">
+                <div className="p-2.5 bg-amber-50 border border-amber-300 rounded-xl text-center text-xs font-black text-amber-900 uppercase tracking-wider">
+                  *** FACTURA PROFORMA — DOCUMENTO NO VÁLIDO PARA DEDUCCIÓN FISCAL ***
+                </div>
+
+                <div className="flex justify-between items-start border-b border-slate-200 pb-4">
+                  <div>
+                    <h2 className="text-xl font-black text-slate-900">{config?.nombre_empresa || 'DM CAR'}</h2>
+                    <p className="text-xs text-slate-500">CIF: {config?.cif || 'N/A'}</p>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-xs font-bold text-slate-400 uppercase block">Nº Proforma</span>
+                    <span className="text-lg font-black text-amber-600">{modalProforma.factura.numero_proforma || 'FPAA0000'}</span>
+                    <span className="text-xs text-slate-500 block">
+                      {new Date().toLocaleDateString('es-ES')}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 text-xs">
+                  <div>
+                    <span className="font-bold text-slate-400 uppercase block">Razón Social / Entidad</span>
+                    <p className="font-bold text-slate-900 text-sm">{cliente.nombre}</p>
+                    {cliente.dni && <p className="text-slate-600">CIF/NIF: {cliente.dni}</p>}
+                  </div>
+                  <div className="text-right">
+                    <span className="font-bold text-slate-400 uppercase block">Vehículo</span>
+                    <p className="font-bold text-slate-900 text-sm">{vehiculo.marca} {vehiculo.modelo}</p>
+                    <p className="text-amber-700 font-mono font-bold">{vehiculo.matricula}</p>
+                  </div>
+                </div>
+
+                {/* Conceptos */}
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b-2 border-slate-300 text-slate-700 font-bold uppercase">
+                      <th className="pb-2 text-left">Concepto</th>
+                      <th className="pb-2 text-center w-12">Cant.</th>
+                      <th className="pb-2 text-right w-20">Precio</th>
+                      <th className="pb-2 text-right w-20">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 text-slate-800">
+                    {(modalProforma.factura.conceptos || []).map((c, i) => (
+                      <tr key={i}>
+                        <td className="py-2 pr-2">{c.descripcion}</td>
+                        <td className="py-2 text-center text-slate-600">{c.cantidad}</td>
+                        <td className="py-2 text-right text-slate-600">{c.precio.toFixed(2)} €</td>
+                        <td className="py-2 text-right font-semibold">{(c.cantidad * c.precio).toFixed(2)} €</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                {/* Totales */}
+                <div className="border-t-2 border-slate-300 pt-3 flex justify-end">
+                  <div className="text-right space-y-1 w-48 text-xs">
+                    <div className="flex justify-between text-slate-600">
+                      <span>Total Reparación:</span>
+                      <span className="font-black text-slate-900">{modalProforma.factura.total.toFixed(2)} €</span>
+                    </div>
+                    <div className="flex justify-between text-emerald-600 font-bold">
+                      <span>Abonado:</span>
+                      <span>{(modalProforma.factura.total_abonado || 0).toFixed(2)} €</span>
+                    </div>
+                    <div className="flex justify-between text-rose-600 font-black text-sm border-t border-slate-300 pt-1">
+                      <span>Pendiente:</span>
+                      <span>{Math.max(0, modalProforma.factura.total - (modalProforma.factura.total_abonado || 0)).toFixed(2)} €</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Acciones */}
+            <div className="p-4 bg-slate-950 border-t border-slate-800 flex justify-center gap-3">
+              <button
+                onClick={() => handleDownloadProforma(modalProforma.factura!, modalProforma.cobros, modalProforma.expedienteStr)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+              >
+                <Download className="w-4 h-4 text-amber-400" /> Descargar PDF
+              </button>
+              <button
+                onClick={() => handleSendProforma(modalProforma.factura!, modalProforma.cobros, modalProforma.expedienteStr)}
+                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+              >
+                <Send className="w-4 h-4" /> Enviar por Email
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
