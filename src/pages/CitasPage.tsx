@@ -250,11 +250,27 @@ export function CitasPage() {
                   >
                     <CalendarClock className="w-3.5 h-3.5" />
                     {(cita.estado === 'confirmada' || cita.estado === 'completada')
-                      ? 'MODIFICAR'
+                      ? 'CONFIRMADA'
                       : (cita.fecha && cita.hora)
                       ? 'MODIFICAR CITA'
                       : 'ASIGNAR CITA'}
                   </button>
+
+                  {/* Botón para que el taller confirme la entrega del vehículo en taller */}
+                  {cita.estado !== 'confirmada' && cita.estado !== 'completada' && (
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation()
+                        await supabase.from('citas').update({ estado: 'confirmada' }).eq('id', cita.id)
+                        loadCitas()
+                      }}
+                      className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-wider bg-emerald-600 hover:bg-emerald-500 text-white shadow-md transition-all active:scale-95 cursor-pointer"
+                      title="Confirmar llegada del vehículo al taller"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      CONFIRMAR LLEGADA
+                    </button>
+                  )}
                 </div>
 
                 {/* LÍNEA 2: Número de expediente flotante (x1.5), Fecha y Hora repartidas equitativamente */}

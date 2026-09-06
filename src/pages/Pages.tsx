@@ -12,6 +12,7 @@ import type { Usuario, RolUsuario, Proveedor, FacturaRecibida, PagoRecibida, Con
 export { ClienteAdminPage } from './ClienteAdminPage'
 export { VehiculoAdminPage } from './VehiculoAdminPage'
 export { ExpedientePage } from './ExpedientePage'
+export { SolicitudesPage } from './SolicitudesPage'
 
 import { NuevaFacturaRecibidaIcon } from '../components/CustomIcons'
 

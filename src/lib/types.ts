@@ -33,7 +33,7 @@ export interface Concepto {
 }
 
 export type EstadoPresupuesto = 'pendiente' | 'aceptado' | 'rechazado'
-export type EstadoCita = 'pendiente' | 'confirmada' | 'completada' | 'cancelada'
+export type EstadoCita = 'pendiente' | 'aceptada' | 'confirmada' | 'completada' | 'cancelada'
 export type EstadoReparacion = 'en_proceso' | 'finalizado'
 export type EstadoCobro = 'pendiente' | 'parcial' | 'pagada'
 
