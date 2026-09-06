@@ -329,15 +329,25 @@ export function ClientesPage() {
     if (nuevoClienteForm.cp) clientePayload.cp = nuevoClienteForm.cp
     if (nuevoClienteForm.localidad) clientePayload.localidad = nuevoClienteForm.localidad
 
-    // Calcular el numero correlativo máximo para asignarlo al nuevo cliente
-    const { data: allClientes } = await supabase.from('clientes').select('numero').order('numero', { ascending: false }).limit(1)
-    const maxNumero = allClientes?.[0]?.numero ?? 0
-    clientePayload.numero = maxNumero + 1
+    // Intentar insertar con el número correlativo
+    const { data: allClientes } = await supabase.from('clientes').select('id').limit(1)
+    let data: any = null
+    let error: any = null
 
-    let { data, error } = await supabase.from('clientes').insert(clientePayload).select().maybeSingle()
+    try {
+      const { data: maxRes } = await supabase.from('clientes').select('numero').order('numero', { ascending: false }).limit(1)
+      const maxNumero = maxRes?.[0]?.numero ?? 0
+      clientePayload.numero = maxNumero + 1
+      const res = await supabase.from('clientes').insert(clientePayload).select().maybeSingle()
+      data = res.data
+      error = res.error
+    } catch (e) {
+      delete clientePayload.numero
+    }
 
-    // Si fallara la consulta select/single por restricciones de RLS o columnas opcionales
-    if (error && (error.code === 'PGRST204' || error.message.includes('column'))) {
+    // Si fallara por la columna numero, intentar sin la columna numero
+    if (error && (error.message.includes('numero') || error.code === 'PGRST204' || error.message.includes('column'))) {
+      delete clientePayload.numero
       delete clientePayload.cp
       delete clientePayload.localidad
       const res = await supabase.from('clientes').insert(clientePayload).select().maybeSingle()
