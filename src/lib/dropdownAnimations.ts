@@ -1,14 +1,7 @@
 import type { Variants } from 'framer-motion';
 
-/**
- * Duración total unificada desde la aparición del primer icono hasta el último: 1.5 segundos.
- */
-export const TOTAL_DROPDOWN_ANIMATION_TIME = 1.5; // segundos
+export const TOTAL_DROPDOWN_ANIMATION_TIME = 1.5;
 
-/**
- * Genera las variantes de contenedor calculando el stagger exacto para que
- * la secuencia completa desde el primer icono al último dure exactamente 1.5 segundos.
- */
 export function getDropdownStaggerVariants(itemCount = 8, totalDuration = TOTAL_DROPDOWN_ANIMATION_TIME): Variants {
   const count = Math.max(1, itemCount);
   const stagger = count > 1 ? totalDuration / (count - 1) : 0;
@@ -32,9 +25,6 @@ export function getDropdownStaggerVariants(itemCount = 8, totalDuration = TOTAL_
   };
 }
 
-/**
- * Variantes individuales para cada icono o fila con fade-in suave, escala y traslación Y.
- */
 export const dropdownItemVariants: Variants = {
   hidden: {
     opacity: 0,
@@ -61,9 +51,6 @@ export const dropdownItemVariants: Variants = {
   },
 };
 
-/**
- * Variantes para el contenedor del panel desplegable
- */
 export const dropdownPanelVariants: Variants = {
   hidden: { height: 0, opacity: 0 },
   show: {

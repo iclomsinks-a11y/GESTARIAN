@@ -21,7 +21,7 @@ export function getExpediente(presupuesto: Partial<Presupuesto> & { expediente_i
 
   const pNum = presupuesto.numero || '';
 
-  // Formato antiguo: P + XT + AA + NNNN
+  // Formato: P + XT + AA + NNNN
   if (pNum.length >= 9 && pNum.includes('T')) {
     const aa = pNum.substring(3, 5); 
     const nnnn = pNum.substring(pNum.length - 4); 
@@ -92,10 +92,10 @@ export function validarDocumentoAEAT(doc: string): { valido: boolean; tipo: 'DNI
 
     for (let i = 0; i < 7; i++) {
       const n = parseInt(digitos.charAt(i), 10);
-      if (i % 2 === 0) { // Posiciones impares 1, 3, 5, 7 (índice 0, 2, 4, 6)
+      if (i % 2 === 0) {
         const doble = n * 2;
         sumaImpares += Math.floor(doble / 10) + (doble % 10);
-      } else { // Posiciones pares 2, 4, 6 (índice 1, 3, 5)
+      } else {
         sumaPares += n;
       }
     }
@@ -104,7 +104,6 @@ export function validarDocumentoAEAT(doc: string): { valido: boolean; tipo: 'DNI
     const digitoControl = (10 - (sumaTotal % 10)) % 10;
     const letrasControlCIF = 'JABCDEFGHI';
 
-    // Tipos de CIF que requieren dígito numérico, letra, o admiten ambos
     const soloLetra = /^[KPQRSNW]/.test(letraInicial);
     const soloNumero = /^[ABEH]/.test(letraInicial);
 
@@ -120,7 +119,6 @@ export function validarDocumentoAEAT(doc: string): { valido: boolean; tipo: 'DNI
       return { valido: false, tipo: 'CIF', error: `Letra de control incorrecta. Debería ser '${letraStr}'` };
     }
 
-    // Admite tanto letra como número
     if (controlChar === digitoStr || controlChar === letraStr) {
       return { valido: true, tipo: 'CIF' };
     }
@@ -129,4 +127,3 @@ export function validarDocumentoAEAT(doc: string): { valido: boolean; tipo: 'DNI
 
   return { valido: false, tipo: 'DESCONOCIDO', error: 'Formato de NIF/CIF no válido' };
 }
-

@@ -1,0 +1,6 @@
+{
+  "name": "GESTARIAN DM CAR",
+  "description": "Sistema ERP integral para talleres mecánicos, chapa y pintura con gestión de clientes, presupuestos, citas, facturas y asistente METIS",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

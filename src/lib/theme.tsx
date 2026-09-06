@@ -105,8 +105,8 @@ export const DEFAULT_THEME_SETTINGS: ThemeSettings = {
 
 interface ThemeContextValue {
   themeSettings: ThemeSettings
-  setThemeSettings: (s: ThemeSettings) => void
-  saveThemeToDB: (s: ThemeSettings) => Promise<void>
+  setThemeSettings: (s: ThemeSettings | ((prev: ThemeSettings) => ThemeSettings)) => void
+  saveThemeToDB: (s?: ThemeSettings) => Promise<void>
   playSound: (type?: 'click' | 'success' | 'error') => void
   appearance: AppearanceSettings
   setAppearance: (a: AppearanceSettings) => void
@@ -114,31 +114,25 @@ interface ThemeContextValue {
 
 const ThemeContext = createContext<ThemeContextValue | null>(null)
 
-function applyCssVars(t: ThemeSettings) {
+function applyCssVars(t?: ThemeSettings) {
+  const safeT = t || DEFAULT_THEME_SETTINGS
   const root = document.documentElement
 
-  // Colores principales
-  root.style.setProperty('--primary', t.primary_color)
-  root.style.setProperty('--secondary', t.secondary_color)
-  root.style.setProperty('--btn-color', t.button_color)
-  root.style.setProperty('--icon-color', t.icon_color)
-  root.style.setProperty('--warning', t.warning_color)
-  root.style.setProperty('--success', t.success_color)
-  root.style.setProperty('--error', t.error_color)
+  root.style.setProperty('--primary', safeT.primary_color)
+  root.style.setProperty('--secondary', safeT.secondary_color)
+  root.style.setProperty('--btn-color', safeT.button_color)
+  root.style.setProperty('--icon-color', safeT.icon_color)
+  root.style.setProperty('--warning', safeT.warning_color)
+  root.style.setProperty('--success', safeT.success_color)
+  root.style.setProperty('--error', safeT.error_color)
 
-  // Fondos
-  root.style.setProperty('--card-bg', t.card_color)
-  root.style.setProperty('--dashboard-bg', t.dashboard_color)
-  root.style.setProperty('--table-bg', t.table_color)
-  root.style.setProperty('--header-bg', t.header_color)
+  root.style.setProperty('--card-bg', safeT.card_color)
+  root.style.setProperty('--dashboard-bg', safeT.dashboard_color)
+  root.style.setProperty('--table-bg', safeT.table_color)
+  root.style.setProperty('--header-bg', safeT.header_color)
 
-  // Diseño
-  root.style.setProperty('--radius', t.border_radius)
-  root.style.setProperty('--font-family', t.typography)
-
-  // =========================================================
-  // COLORES CENTRALIZADOS DE TEXTO
-  // =========================================================
+  root.style.setProperty('--radius', safeT.border_radius)
+  root.style.setProperty('--font-family', safeT.typography)
 
   const defaultTextColors = {
     text_title: '#ffffff',
@@ -149,17 +143,11 @@ function applyCssVars(t: ThemeSettings) {
   }
 
   let textColors = defaultTextColors
-
   const storedTextColors = localStorage.getItem('gestarian_text_colors')
-
   if (storedTextColors) {
     try {
       const parsed = JSON.parse(storedTextColors)
-
-      textColors = {
-        ...defaultTextColors,
-        ...parsed,
-      }
+      textColors = { ...defaultTextColors, ...parsed }
     } catch {
       textColors = defaultTextColors
     }
@@ -171,10 +159,6 @@ function applyCssVars(t: ThemeSettings) {
   root.style.setProperty('--text-secondary', textColors.text_secondary)
   root.style.setProperty('--text-card', textColors.text_card)
 
-  // =========================================================
-  // SOMBRAS
-  // =========================================================
-
   const shadowsMap = {
     none: 'none',
     sm: '0 1px 2px 0 rgb(0 0 0 / 0.05)',
@@ -185,124 +169,72 @@ function applyCssVars(t: ThemeSettings) {
 
   root.style.setProperty(
     '--shadow-custom',
-    shadowsMap[t.shadows as keyof typeof shadowsMap] || shadowsMap.md,
+    shadowsMap[safeT.shadows as keyof typeof shadowsMap] || shadowsMap.md,
   )
 
-  // =========================================================
-  // COMPATIBILIDAD CON VARIABLES ANTIGUAS
-  // =========================================================
-
-  root.style.setProperty('--color-fondo', t.dashboard_color)
-
+  root.style.setProperty('--color-fondo', safeT.dashboard_color)
   root.style.setProperty(
     '--color-texto',
-    textColors.text_primary ||
-      (t.is_dark_mode ? '#f8fafc' : '#0f172a'),
+    textColors.text_primary || (safeT.is_dark_mode ? '#f8fafc' : '#0f172a'),
   )
+  root.style.setProperty('--color-glow', safeT.button_color)
+  root.style.setProperty('--color-linea', safeT.secondary_color)
+  root.style.setProperty('--color-relleno', safeT.card_color)
+  root.style.setProperty('--color-relleno-btn', safeT.button_color)
+  root.style.setProperty('--color-relleno-paneles', safeT.card_color)
 
-  root.style.setProperty('--color-glow', t.button_color)
-  root.style.setProperty('--color-linea', t.secondary_color)
-  root.style.setProperty('--color-relleno', t.card_color)
-  root.style.setProperty('--color-relleno-btn', t.button_color)
-  root.style.setProperty('--color-relleno-paneles', t.card_color)
+  root.style.fontFamily = safeT.typography
+  root.style.fontSize = safeT.font_size
 
-  // =========================================================
-  // TIPOGRAFÍA
-  // =========================================================
-
-  root.style.fontFamily = t.typography
-  root.style.fontSize = t.font_size
-
-  // =========================================================
-  // MODO CLARO / OSCURO
-  // =========================================================
-
-  root.classList.remove(
-    'gestarian-day-mode',
-    'gestarian-night-mode',
-    'dark',
-    'light',
-  )
-
-  if (t.is_dark_mode) {
+  root.classList.remove('gestarian-day-mode', 'gestarian-night-mode', 'dark', 'light')
+  if (safeT.is_dark_mode) {
     root.classList.add('gestarian-night-mode', 'dark')
   } else {
     root.classList.add('gestarian-day-mode', 'light')
   }
 
-  // =========================================================
-  // FAVICON
-  // =========================================================
-
-  if (t.favicon_url) {
-    let link = document.querySelector(
-      "link[rel~='icon']",
-    ) as HTMLLinkElement | null
-
+  if (safeT.favicon_url) {
+    let link = document.querySelector("link[rel~='icon']") as HTMLLinkElement | null
     if (!link) {
       link = document.createElement('link')
       link.rel = 'icon'
       document.head.appendChild(link)
     }
-
-    link.href = t.favicon_url
+    link.href = safeT.favicon_url
   }
 }
 
-export function ThemeProvider({
-  children,
-}: {
-  children: ReactNode
-}) {
-  const [themeSettings, setThemeSettingsState] =
-    useState<ThemeSettings>(DEFAULT_THEME_SETTINGS)
+export function ThemeProvider({ children }: { children: ReactNode }) {
+  const [themeSettings, setThemeSettingsState] = useState<ThemeSettings>(DEFAULT_THEME_SETTINGS)
 
-  // Sistema legacy de apariencia
-  const [appearance, setAppearance] =
-    useState<AppearanceSettings>({
-      color_fondo: '#1c1c1e',
-      color_texto: '#f5f5f7',
-      color_glow_botones: '#40e0d0',
-      color_linea_botones: '#8e8e93',
-      color_relleno_campo: '#2c2c2e',
-      color_relleno_botones: '#3a3a3c',
-      color_relleno_paneles: '#2c2c2e',
-      modo_diurno: false,
-      animaciones_activadas: true,
-      sonido_activado: true,
-    })
-
-  // =========================================================
-  // CARGAR CONFIGURACIÓN
-  // =========================================================
+  const [appearance, setAppearance] = useState<AppearanceSettings>({
+    color_fondo: '#1c1c1e',
+    color_texto: '#f5f5f7',
+    color_glow_botones: '#40e0d0',
+    color_linea_botones: '#8e8e93',
+    color_relleno_campo: '#2c2c2e',
+    color_relleno_botones: '#3a3a3c',
+    color_relleno_paneles: '#2c2c2e',
+    modo_diurno: false,
+    animaciones_activadas: true,
+    sonido_activado: true,
+  })
 
   useEffect(() => {
-    // 1. Carga inmediata desde LocalStorage
-
     const stored = localStorage.getItem('gestarian-theme')
-
-    if (stored) {
+    if (stored && stored !== 'undefined' && stored !== 'null') {
       try {
-        const parsed: ThemeSettings = {
-          ...DEFAULT_THEME_SETTINGS,
-          ...JSON.parse(stored),
-        }
-
+        const parsed: ThemeSettings = { ...DEFAULT_THEME_SETTINGS, ...JSON.parse(stored) }
         setThemeSettingsState(parsed)
         applyCssVars(parsed)
       } catch (error) {
-        console.error(
-          'Error parsing local theme',
-          error,
-        )
-
+        setThemeSettingsState(DEFAULT_THEME_SETTINGS)
         applyCssVars(DEFAULT_THEME_SETTINGS)
       }
     } else {
+      setThemeSettingsState(DEFAULT_THEME_SETTINGS)
       applyCssVars(DEFAULT_THEME_SETTINGS)
     }
-
-    // 2. Carga desde Supabase
 
     const loadFromDB = async () => {
       try {
@@ -313,130 +245,70 @@ export function ThemeProvider({
           .maybeSingle()
 
         if (data && !error) {
-          const parsed: ThemeSettings = {
-            ...DEFAULT_THEME_SETTINGS,
-            ...data,
-          }
-
+          const parsed: ThemeSettings = { ...DEFAULT_THEME_SETTINGS, ...data }
           setThemeSettingsState(parsed)
-
           applyCssVars(parsed)
-
-          localStorage.setItem(
-            'gestarian-theme',
-            JSON.stringify(parsed),
-          )
+          try {
+            localStorage.setItem('gestarian-theme', JSON.stringify(parsed))
+          } catch (e) {}
         }
       } catch (error) {
-        console.error(
-          'Error loading theme from database',
-          error,
-        )
+        console.warn('Error loading theme from database', error)
       }
     }
 
     void loadFromDB()
   }, [])
 
-  // =========================================================
-  // ACTUALIZAR TEMA
-  // =========================================================
-
-  function setThemeSettings(t: ThemeSettings) {
-    setThemeSettingsState(t)
-
-    applyCssVars(t)
-
-    localStorage.setItem(
-      'gestarian-theme',
-      JSON.stringify(t),
-    )
+  function setThemeSettings(t: ThemeSettings | ((prev: ThemeSettings) => ThemeSettings)) {
+    setThemeSettingsState(prev => {
+      const next = typeof t === 'function' ? t(prev) : t
+      const safeT = next && typeof next === 'object' && Object.keys(next).length > 0 ? next : DEFAULT_THEME_SETTINGS
+      applyCssVars(safeT)
+      try {
+        localStorage.setItem('gestarian-theme', JSON.stringify(safeT))
+      } catch (e) {}
+      return safeT
+    })
   }
 
-  // =========================================================
-  // GUARDAR EN SUPABASE
-  // =========================================================
-
-  async function saveThemeToDB(t: ThemeSettings) {
-    setThemeSettings(t)
+  async function saveThemeToDB(t?: ThemeSettings) {
+    const safeT = t && typeof t === 'object' && Object.keys(t).length > 0 ? t : (themeSettings || DEFAULT_THEME_SETTINGS)
+    setThemeSettings(safeT)
 
     try {
-      // IMPORTANTE:
-      // t ya contiene la propiedad id.
-      // No añadimos "id: 1" otra vez.
-
-      const { error } = await supabase
-        .from('theme_settings')
-        .upsert(t)
-
+      const { error } = await supabase.from('theme_settings').upsert(safeT)
       if (error) {
-        console.error(
-          'Error saving theme to database',
-          error,
-        )
+        console.warn('Error saving theme to database', error)
       }
     } catch (error) {
-      console.error(
-        'Unexpected error saving theme',
-        error,
-      )
+      console.warn('Unexpected error saving theme', error)
     }
   }
 
-  // =========================================================
-  // SONIDOS
-  // =========================================================
-
-  function playSound(
-    type: 'click' | 'success' | 'error' = 'click',
-  ) {
+  function playSound(type: 'click' | 'success' | 'error' = 'click') {
     if (!appearance.sonido_activado) return
 
     try {
       const AudioContextClass =
         window.AudioContext ||
-        (window as typeof window & {
-          webkitAudioContext?: typeof AudioContext
-        }).webkitAudioContext
+        (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
 
       if (!AudioContextClass) return
-
       const ctx = new AudioContextClass()
-
       const osc = ctx.createOscillator()
-
       const gain = ctx.createGain()
-
       osc.connect(gain)
-
       gain.connect(ctx.destination)
 
-      const freqs = {
-        click: 600,
-        success: 880,
-        error: 300,
-      }
-
+      const freqs = { click: 600, success: 880, error: 300 }
       osc.frequency.value = freqs[type]
-
       osc.type = 'sine'
-
-      gain.gain.setValueAtTime(
-        0.08,
-        ctx.currentTime,
-      )
-
-      gain.gain.exponentialRampToValueAtTime(
-        0.001,
-        ctx.currentTime + 0.15,
-      )
-
+      gain.gain.setValueAtTime(0.08, ctx.currentTime)
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15)
       osc.start()
-
       osc.stop(ctx.currentTime + 0.15)
-    } catch {
-      // AudioContext no disponible
-    }
+    } catch {}
   }
 
   return (
@@ -457,12 +329,8 @@ export function ThemeProvider({
 
 export function useTheme() {
   const ctx = useContext(ThemeContext)
-
   if (!ctx) {
-    throw new Error(
-      'useTheme must be used within ThemeProvider',
-    )
+    throw new Error('useTheme must be used within ThemeProvider')
   }
-
   return ctx
 }

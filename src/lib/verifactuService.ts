@@ -31,7 +31,6 @@ export function buildVerifactuUrl(
   const fecha = `${dd}-${mm}-${yyyy}`
   const total = Number(factura.total || 0).toFixed(2)
 
-  // Formato oficial de URL de cotejo de facturas de la Agencia Tributaria (Veri*factu)
   return `https://sede.agenciatributaria.gob.es/Sede/procedimientoini/ZZ01.shtml?nif=${encodeURIComponent(
     emisorNif
   )}&numserie=${encodeURIComponent(numero)}&fecha=${encodeURIComponent(
@@ -59,7 +58,6 @@ export async function generateVerifactuQRDataUrl(
     })
   } catch (err) {
     console.error('Error generando QR VERIFACTU:', err)
-    // Fallback dataURL si falla
     return ''
   }
 }
@@ -72,7 +70,6 @@ export function generateVerifactuQRDataUrlSync(
   config?: Configuracion | null
 ): string {
   const url = buildVerifactuUrl(factura, config)
-  // Generar con QRCode toString o canvas si es posible
   let dataUrl = ''
   QRCode.toDataURL(
     url,

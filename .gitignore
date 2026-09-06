@@ -1,34 +1,8 @@
-# dependencies
 node_modules/
-
-# build outputs
+build/
 dist/
-
-# environment
-.env
-.env.*
-.firebase/
-
-# misc
+coverage/
 .DS_Store
 *.log
-*.zip
-*.tgz
-*.tsbuildinfo
-.vscode/
-.idea/
-
-# archivos de diagnóstico sueltos del taller
-_diag.*
-_activar_urls.ps1
-_firewall_admin.ps1
-_rule.txt
-_urls_result.txt
-indent.txt
-comprobar_modelos.py
-
-# OS files
-Thumbs.db
- 
-GESTARIAN GPT/
-
+.env*
+!.env.example

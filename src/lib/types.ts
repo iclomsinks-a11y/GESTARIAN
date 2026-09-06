@@ -20,26 +20,46 @@ export interface Vehiculo {
   marca: string | null
   modelo: string | null
   anio: number | null
+  ano?: number | null
   vin: string | null
+  bastidor?: string | null
+  combustible?: string | null
   codigo_color?: string | null
   fotos?: string[]
   created_at: string
 }
 
 export interface Concepto {
+  id?: string
   descripcion: string
   cantidad: number
   precio: number
 }
 
-export type EstadoPresupuesto = 'pendiente' | 'aceptado' | 'rechazado'
-export type EstadoCita = 'pendiente' | 'aceptada' | 'confirmada' | 'completada' | 'cancelada'
-export type EstadoReparacion = 'en_proceso' | 'finalizado'
+export type EstadoPresupuesto = 'pendiente' | 'aceptado' | 'aprobado' | 'rechazado' | 'facturado'
+export type EstadoCita = 'pendiente' | 'solicitada' | 'propuesta' | 'asignada' | 'confirmada' | 'completada' | 'cancelada' | 'modificacion_solicitada'
+export type EstadoReparacion = 'en_proceso' | 'finalizado' | 'finalizada' | 'completada' | 'terminada'
 export type EstadoCobro = 'pendiente' | 'parcial' | 'pagada'
+
+export interface Expediente {
+  id: string
+  numero: string
+  cliente_id?: string | null
+  vehiculo_id?: string | null
+  estado?: string
+  fotos?: string[]
+  descripcion?: string | null
+  fecha?: string | null
+  created_at?: string
+  updated_at?: string
+  [key: string]: any
+}
 
 export interface Presupuesto {
   id: string
   numero: string
+  numero_expediente?: string | null
+  numero_solicitud?: string | null
   expediente_id?: string | null
   cliente_id: string
   vehiculo_id: string | null
@@ -51,51 +71,85 @@ export interface Presupuesto {
   aplicarIva?: boolean
   enviado_email_at?: string | null
   enviado_whatsapp_at?: string | null
-  operarios_asignados?: string[] // IDs de empleados/operarios autorizados adjudicados
-  operarios_nombres?: string[] // Nombres de los autorizados para visualización rápida
+  operarios_asignados?: string[]
+  operarios_nombres?: string[]
+  fecha?: string | null
+  cita_propuesta_fecha?: string | null
+  cita_propuesta_hora?: string | null
+  cita_propuesta_estado?: 'propuesta' | 'aceptada' | 'modificacion_solicitada' | 'cancelada' | null
+  cita_propuesta_fecha_cliente?: string | null
+  cita_propuesta_hora_cliente?: string | null
+  cita_propuesta_nota_cliente?: string | null
+  origen_solicitud?: 'taller' | 'portal_cliente'
+  solicitud_descripcion?: string | null
+  solicitud_urgencia?: 'normal' | 'urgente' | 'pre_itv' | null
   created_at: string
   updated_at?: string
 }
 
 export interface Cita {
   id: string
-  presupuesto_id: string | null
+  presupuesto_id?: string | null
+  numero_expediente?: string | null
   cliente_id: string
   vehiculo_id: string | null
   fecha: string
   hora: string | null
   estado: EstadoCita
-  observaciones: string | null
+  motivo?: string | null
+  observaciones?: string | null
+  fecha_propuesta_cliente?: string | null
+  hora_propuesta_cliente?: string | null
+  nota_cliente?: string | null
+  motivo_rechazo?: string | null
   fotos?: string[]
   created_at: string
 }
 
 export interface Reparacion {
   id: string
+  numero_orden?: string | null
+  numero_expediente?: string | null
   cita_id: string | null
   cliente_id: string
   vehiculo_id: string | null
-  estado: EstadoReparacion
+  estado: EstadoReparacion | string
+  mecanico?: string | null
+  kilometros?: number | null
+  diagnostico?: string | null
   descripcion: string | null
   fotos: string[]
-  operarios_asignados?: string[] // IDs de empleados autorizados adjudicados a la orden de trabajo
-  operarios_nombres?: string[] // Nombres de los empleados adjudicados
-  notas_operario?: string | null // Notas añadidas por los mecánicos durante la ejecución
+  operarios_asignados?: string[]
+  operarios_nombres?: string[]
+  notas_operario?: string | null
+  fecha_inicio?: string | null
+  fecha_fin?: string | null
+  solicitud_superior_pendiente?: boolean
+  fotos_durante_reparacion?: { id: string; url: string; titulo: string; fecha: string }[]
   created_at: string
 }
 
 export interface Factura {
   id: string
   numero: string
+  numero_expediente?: string | null
+  serie?: string | null
   numero_proforma?: string | null
+  tipo?: string | null
   tipo_documento?: 'factura' | 'proforma' | 'recibo'
-  reparacion_id: string | null
-  cliente_id: string
-  vehiculo_id: string | null
-  conceptos: Concepto[]
+  reparacion_id?: string | null
+  cliente_id?: string
+  cliente?: Cliente | any
+  vehiculo_id?: string | null
+  conceptos?: Concepto[]
+  base_imponible?: number | null
+  iva?: number | null
   total: number
-  total_abonado: number
-  estado_cobro: EstadoCobro
+  total_abonado?: number
+  estado?: string | null
+  estado_cobro?: EstadoCobro
+  metodo_pago?: string | null
+  qr_verifactu?: string | null
   fecha: string
   fotos?: string[]
   observaciones?: string
@@ -103,13 +157,14 @@ export interface Factura {
   enviado_email_2_at?: string | null
   enviado_whatsapp_at?: string | null
   enviado_whatsapp_2_at?: string | null
-  created_at: string
+  created_at?: string
   updated_at?: string
 }
 
 export interface Cobro {
   id: string
   factura_id: string
+  numero_expediente?: string | null
   importe: number
   fecha: string
   metodo: string | null
@@ -119,33 +174,33 @@ export interface Cobro {
 }
 
 export interface Configuracion {
-  id: number
+  id?: number
   nombre_empresa: string
   cif: string
   direccion: string
   telefono: string | null
   email: string | null
-  email_gestoria: string | null
-  logo_color: string | null
-  logo_bn: string | null
-  fondo_landscape: string | null
-  fondo_portrait: string | null
-  color_fondo: string | null
-  color_texto: string | null
-  color_glow_botones: string | null
-  color_linea_botones: string | null
-  color_relleno_campo: string | null
-  color_relleno_botones: string | null
-  tipo_empresa: 'autonomo' | 'sociedad_limitada' | null
-  animaciones_activadas: boolean | null
-  sonido_activado: boolean | null
-  // Notificaciones & Comunicaciones
+  email_gestoria?: string | null
+  logo_color?: string | null
+  logo_bn?: string | null
+  logo_app_bn?: string | null
+  fondo_landscape?: string | null
+  fondo_portrait?: string | null
+  color_fondo?: string | null
+  color_texto?: string | null
+  color_glow_botones?: string | null
+  color_linea_botones?: string | null
+  color_relleno_campo?: string | null
+  color_relleno_botones?: string | null
+  iban?: string | null
+  tipo_empresa?: 'autonomo' | 'sociedad_limitada' | null
+  animaciones_activadas?: boolean | null
+  sonido_activado?: boolean | null
   whatsapp_api_key?: string | null
   whatsapp_phone_number_id?: string | null
   email_api_key?: string | null
   email_from?: string | null
   notificaciones_activas?: boolean | null
-  // Configuración de Planes PRO / FREE / ENTERPRISE
   plan_activo?: 'FREE' | 'PRO' | 'ENTERPRISE' | null
   precio_pro_mensual?: number | null
   precio_pro_anual?: number | null
@@ -154,6 +209,28 @@ export interface Configuracion {
   dias_prueba_pro?: number | null
   pro_activo?: boolean | null
   limite_usuarios_free?: number | null
+  ai_provider?: string | null
+  ai_model?: string | null
+  ai_api_key?: string | null
+  doc_ocr_provider?: string | null
+  doc_ocr_model?: string | null
+  doc_ocr_api_key?: string | null
+  plate_api_key?: string | null
+  plate_endpoint?: string | null
+  fallback_api_key?: string | null
+  fallback_provider?: string | null
+  fallback_model?: string | null
+  fallback_enabled?: boolean | null
+  moneda?: string | null
+  sector?: string | null
+  iva?: number | null
+  metodo_redondeo?: string | null
+  logo_url?: string | null
+  fondo_pantalla?: string | null
+  opacidad_fondo?: number | null
+  metis_voice_id?: string | null
+  notificaciones_email?: boolean | null
+  notificaciones_whatsapp?: boolean | null
 }
 
 export interface AppearanceSettings {
@@ -214,8 +291,6 @@ export interface ThemeSettings {
   created_at?: string
   updated_at?: string
 }
-
-
 
 export interface SmartRowField {
   label: string
@@ -347,7 +422,20 @@ export interface Usuario {
   puede_enviar_gestoria?: boolean
   activo: boolean
   es_developer?: boolean
+  email_confirmado?: boolean
+  token_confirmacion?: string | null
+  fecha_envio_token?: string | null
+  fecha_confirmacion?: string | null
+  politica_privacidad_aceptada?: boolean
   created_at: string
+}
+
+export interface PoliticaPrivacidad {
+  id: string
+  version: string
+  texto: string
+  fecha_publicacion: string
+  activo: boolean
 }
 
 export interface Suscripcion {

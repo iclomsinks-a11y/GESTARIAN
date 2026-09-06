@@ -25,7 +25,10 @@ interface ActionToast {
 
 interface ToastContextType {
   showToast: (message: string, type?: ToastType, options?: ToastOptions) => void;
+  addToast: (message: string, type?: ToastType, options?: ToastOptions) => void;
   showActionToast: (message: string, onConfirm: () => void) => void;
+  toasts?: Toast[];
+  removeToast?: (id: string) => void;
 }
 
 const ToastContext = createContext<ToastContextType | undefined>(undefined);
@@ -72,9 +75,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       
       osc.start();
       osc.stop(ctx.currentTime + 0.5);
-    } catch (e) {
-      console.error('Audio play error:', e);
-    }
+    } catch (e) {}
   }, []);
 
   const showToast = useCallback((message: string, type: ToastType = 'success', options?: ToastOptions) => {
@@ -116,11 +117,14 @@ export function ToastProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('gestarian-toast' as any, handleGlobalToast as any);
   }, [showToast]);
 
+  const removeToast = useCallback((id: string) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
   return (
-    <ToastContext.Provider value={{ showToast, showActionToast }}>
+    <ToastContext.Provider value={{ showToast, addToast: showToast, showActionToast, toasts, removeToast }}>
       {children}
       
-      {/* Actionable Simple Toasts (Centered Top) */}
       <div className="fixed top-8 left-1/2 -translate-x-1/2 z-[9999] flex flex-col items-center gap-2 w-full max-w-md px-4 pointer-events-none">
         <AnimatePresence>
           {actionToasts.map((toast) => (
@@ -147,7 +151,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         </AnimatePresence>
       </div>
 
-      {/* Global Animated Toasts (Centered in Screen) */}
       {toasts.length > 0 && (
         <div className="fixed inset-0 z-[9999] flex items-center justify-center pointer-events-none p-4">
           <AnimatePresence>

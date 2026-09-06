@@ -1,6 +1,6 @@
 /**
- * Comprime imágenes en canvas a WebP con tamaño y calidad optimizados.
- * Reduce fotos de 4-8 MB a ~120-200 KB antes de cualquier subida.
+ * Compress an image using canvas to a maximum width and given quality.
+ * Returns a Blob suitable for upload.
  */
 export interface CompressOptions {
   maxWidth?: number
@@ -23,10 +23,8 @@ export async function compressImage(
   } else if (typeof maxWidthOrOptions === 'number') {
     maxWidth = maxWidthOrOptions
   }
-
-  // Si no es imagen, se retorna intacto
+  // Only compress image files
   if (file.type && !file.type.startsWith('image/')) return file;
-  
   const img = new Image();
   const objectUrl = URL.createObjectURL(file);
   await new Promise<void>((resolve, reject) => {
@@ -34,7 +32,6 @@ export async function compressImage(
     img.onerror = (e) => reject(e);
     img.src = objectUrl;
   });
-
   const scale = Math.min(1, maxWidth / (img.width || 1280));
   const canvas = document.createElement('canvas');
   canvas.width = Math.round((img.width || 1280) * scale);

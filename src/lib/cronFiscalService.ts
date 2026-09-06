@@ -16,7 +16,6 @@ export interface CronEvent {
 export class CronFiscalService {
   private static KEY = 'gestarian_cron_fiscal_status'
 
-  // Devuelve el estado guardado de los avisos enviados
   static getStatus(): Record<string, boolean> {
     try {
       const data = localStorage.getItem(this.KEY)
@@ -36,19 +35,16 @@ export class CronFiscalService {
     return !!this.getStatus()[avisoId]
   }
 
-  // Comprueba la fecha actual y devuelve el evento correspondiente (si hay alguno activo)
   static checkCurrentDate(): CronEvent | null {
     const now = new Date()
-    const month = now.getMonth() // 0-11
+    const month = now.getMonth()
     const date = now.getDate()
     const year = now.getFullYear()
     
-    // Meses pre-cierre (Marzo=2, Junio=5, Septiembre=8, Diciembre=11)
     const isPreCierre = [2, 5, 8, 11].includes(month)
-    // Meses de cierre (Abril=3, Julio=6, Octubre=9, Enero=0)
     const isCierre = [3, 6, 9, 0].includes(month)
 
-    const quarter = Math.floor(month / 3) + 1 // Q1, Q2, Q3, Q4
+    const quarter = Math.floor(month / 3) + 1
     const idPrefix = `Q${quarter}-${year}`
     const prevQuarter = quarter === 1 ? 4 : quarter - 1
     const prevYear = quarter === 1 ? year - 1 : year
@@ -82,7 +78,6 @@ export class CronFiscalService {
     }
 
     if (isCierre) {
-      // Los avisos del mes de cierre corresponden al trimestre anterior
       if (date === 5 && !this.isDone(`${prevIdPrefix}-aviso_5`)) {
         return {
           tipo: 'aviso_5',
@@ -100,7 +95,6 @@ export class CronFiscalService {
         }
       }
       if (date >= 10) {
-        // Día 10: si son las 22:00 (10:00 PM) o posterior, disparo mandatorio
         const isPast22 = now.getHours() >= 22 || date > 10
         if (isPast22 && !this.isDone(`${prevIdPrefix}-envio_10`)) {
           return {

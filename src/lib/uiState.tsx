@@ -1,11 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import type { ReactNode } from 'react'
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { UIStateContext } from './uiStateContext'
-
-// NOTA: Este módulo solo exporta el componente UIStateProvider (compatible con
-// Fast Refresh). El contexto y el hook useUIState viven en ./uiStateContext.ts
-// para que Vite no muestre el warning "Could not Fast Refresh (useUIState export
-// is incompatible)" al guardar.
 
 export function UIStateProvider({ children }: { children: ReactNode }) {
   const [isFullscreen, setIsFullscreen] = useState(false)
@@ -14,14 +8,6 @@ export function UIStateProvider({ children }: { children: ReactNode }) {
   const headerHoverRef = useRef(false)
   const footerHoverRef = useRef(false)
 
-  // Sincroniza el estado de pantalla completa con el navegador de forma robusta.
-  // Cubre 3 casos:
-  //  1) Fullscreen API (requestFullscreen / Esc) → fullscreenchange
-  //  2) Pantalla completa del navegador con F11 → document.fullscreenElement es null,
-  //     así que se detecta cuando el viewport ocupa toda la pantalla.
-  //  3) Cambios de tamaño (maximizar, arrastrar, DevTools) → resize
-  // NOTA: se ha eliminado la entrada automática en fullscreen al primer toque/clic,
-  // que dejaba al usuario encerrado sin forma visible de salir.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined
 
@@ -29,8 +15,6 @@ export function UIStateProvider({ children }: { children: ReactNode }) {
       clearTimeout(timer)
       timer = setTimeout(() => {
         const inApiFullscreen = !!document.fullscreenElement
-        // Solo en escritorio (puntero fino) tiene sentido la detección de F11;
-        // en móvil innerHeight puede igualar screen.height sin estar en fullscreen.
         const isDesktop = window.matchMedia('(pointer: fine)').matches
         const fillsScreen =
           isDesktop &&
@@ -43,7 +27,6 @@ export function UIStateProvider({ children }: { children: ReactNode }) {
     }
 
     const onKeyDown = (e: KeyboardEvent) => {
-      // F11 no dispara fullscreenchange: comprobamos tras el cambio de tamaño
       if (e.key === 'F11' || e.key === 'Escape') sync()
     }
 
@@ -123,6 +106,8 @@ export function UIStateProvider({ children }: { children: ReactNode }) {
       footerVisible,
       setHeaderHover,
       setFooterHover,
+      avatarState: 'idle',
+      setAvatarState: () => {},
     }}>
       {children}
     </UIStateContext.Provider>

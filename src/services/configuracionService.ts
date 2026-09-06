@@ -1,81 +1,86 @@
-import { supabase } from '../lib/supabase';
-import type { Configuracion } from '../lib/types';
+import { supabase } from '../lib/supabase'
+import type { Configuracion } from '../lib/types'
 
-export const configuracionService = {
-  // Obtener configuración global del taller (registro con ID 1) con fallback local
-  async obtenerConfiguracion(): Promise<Configuracion | null> {
-    let configData: any = null;
+const CONFIG_CACHE_KEY = 'gestarian_config_cache'
 
-    try {
-      const { data, error } = await supabase
-        .from('configuracion')
-        .select('*')
-        .eq('id', 1)
-        .maybeSingle();
+export const DEFAULT_CONFIG: Configuracion = {
+  nombre_empresa: 'DM CAR',
+  cif: 'B12345678',
+  direccion: 'Calle del Taller, 12',
+  telefono: '912 345 678',
+  email: 'info@dmcar.es',
+  moneda: 'EUR',
+  iva: 21,
+  metodo_redondeo: 'estandar',
+  iban: '',
+  sector: 'automocion',
+  logo_url: '',
+  logo_bn: '',
+  logo_app_bn: '',
+  fondo_portrait: '',
+  fondo_landscape: '',
+  fondo_pantalla: '',
+  opacidad_fondo: 0.15,
+  metis_voice_id: 'es-ES-Neural2-A',
+  notificaciones_email: true,
+  notificaciones_whatsapp: true,
+}
 
-      if (!error && data) {
-        configData = data;
-      }
-    } catch (e) {
-      console.warn('[configuracionService] Error conectando con Supabase:', e);
-    }
-
-    // Combinar con tarifas guardadas localmente
-    const localTarifas = localStorage.getItem('gestarian_tarifas_config');
-    if (localTarifas) {
+export async function getConfiguracion(): Promise<Configuracion> {
+  try {
+    const cached = localStorage.getItem(CONFIG_CACHE_KEY)
+    let initialConfig: Configuracion = DEFAULT_CONFIG
+    if (cached) {
       try {
-        const parsed = JSON.parse(localTarifas);
-        configData = { ...(configData || { id: 1 }), ...parsed };
+        initialConfig = { ...DEFAULT_CONFIG, ...JSON.parse(cached) }
       } catch (e) {}
     }
 
-    return configData ? (configData as Configuracion) : {
-      id: 1,
-      nombre_empresa: '',
-      cif: '',
-      direccion: '',
-      telefono: '',
-      email: '',
-      email_gestoria: '',
-      tipo_empresa: 'empresa',
-      precio_pro_mensual: 29.90,
-      precio_pro_anual: 299.00,
-      precio_enterprise_mensual: 79.90,
-      precio_enterprise_anual: 799.00,
-      dias_prueba_pro: 30,
-      limite_usuarios_free: 3,
-      plan_activo: 'FREE',
-      pro_activo: false
-    } as any;
-  },
+    const { data, error } = await supabase
+      .from('configuracion')
+      .select('id, nombre_empresa, cif, direccion, telefono, email, moneda, iva, metodo_redondeo, iban, sector, logo_url, opacidad_fondo, notificaciones_email, notificaciones_whatsapp, metis_voice_id')
+      .limit(1)
+      .maybeSingle()
 
-  // Actualizar datos de configuración y planes de forma perpetua y resiliente
-  async actualizarConfiguracion(datos: Partial<Configuracion>): Promise<void> {
-    // 1. Guardar siempre en localStorage para persistencia garantizada
-    try {
-      const prev = localStorage.getItem('gestarian_tarifas_config');
-      const merged = { ...(prev ? JSON.parse(prev) : {}), ...datos };
-      localStorage.setItem('gestarian_tarifas_config', JSON.stringify(merged));
-    } catch (e) {
-      console.warn('[configuracionService] Error guardando en localStorage:', e);
+    if (error || !data) {
+      return initialConfig
     }
 
-    // 2. Guardar en Supabase con upsert para id: 1
-    try {
-      const { error } = await supabase
-        .from('configuracion')
-        .upsert({ id: 1, ...datos });
-
-      if (error) {
-        console.warn('[configuracionService] Supabase upsert error:', error);
-        try {
-          await supabase.from('configuracion').update(datos).eq('id', 1);
-        } catch (e) {}
-      }
-    } catch (err) {
-      console.warn('[configuracionService] Error de red en Supabase:', err);
-      // No re-lanzar error si ya quedó guardado en local
-    }
+    const merged = { ...initialConfig, ...data }
+    localStorage.setItem(CONFIG_CACHE_KEY, JSON.stringify(merged))
+    return merged
+  } catch (err) {
+    console.warn('Error al cargar configuración:', err)
+    return DEFAULT_CONFIG
   }
-};
+}
+
+export async function updateConfiguracion(config: Partial<Configuracion>): Promise<{ success: boolean; error?: string }> {
+  try {
+    const current = await getConfiguracion()
+    const updated = { ...current, ...config }
+
+    localStorage.setItem(CONFIG_CACHE_KEY, JSON.stringify(updated))
+    window.dispatchEvent(new CustomEvent('gestarian-config-updated', { detail: updated }))
+
+    const { error } = await supabase
+      .from('configuracion')
+      .upsert({
+        id: updated.id || undefined,
+        ...config,
+        updated_at: new Date().toISOString()
+      })
+
+    if (error) {
+      console.warn('Error actualizando configuracion en base de datos:', error)
+      return { success: true }
+    }
+
+    return { success: true }
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Error guardando configuración' }
+  }
+}
+
+export const saveConfiguracion = updateConfiguracion
 

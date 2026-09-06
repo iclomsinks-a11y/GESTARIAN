@@ -56,15 +56,12 @@ export const useGestures = ({
   const isFadingOutRef = useRef(isFadingOut)
   const setShowPanelsRef = useRef(setShowPanels)
   const setIsFadingOutRef = useRef(setIsFadingOut)
-  const navigateRef = useRef(navigate)
 
   useEffect(() => { showPanelsRef.current = showPanels }, [showPanels])
   useEffect(() => { isFadingOutRef.current = isFadingOut }, [isFadingOut])
   useEffect(() => { setShowPanelsRef.current = setShowPanels }, [setShowPanels])
   useEffect(() => { setIsFadingOutRef.current = setIsFadingOut }, [setIsFadingOut])
-  useEffect(() => { navigateRef.current = navigate }, [navigate])
 
-  // Función para obtener la posición real del scroll (sea window o el contenedor de la página)
   const getScrollTop = () => {
     const motionDiv = document.querySelector('main > div.overflow-y-auto')
     const containerScroll = motionDiv ? motionDiv.scrollTop : 0
@@ -123,7 +120,6 @@ export const useGestures = ({
       const sp = showPanelsRef.current
       const fo = isFadingOutRef.current
 
-      // ── 1. TAP (doble tap para abrir panel) ─────────────────────────────────
       if (Math.abs(diffX) < 12 && Math.abs(diffY) < 12) {
         const now = Date.now()
         if (lastTap.current !== 0 && now - lastTap.current < 350) {
@@ -141,22 +137,17 @@ export const useGestures = ({
         return
       }
 
-      // ── 2. SWIPE HORIZONTAL ────────────────
       if (directionLocked.current === 'h') {
         setIsAnimating(true)
         setOffsetX(0)
         return
       }
 
-      // ── 3. SWIPE VERTICAL (Cierre de paneles estrictamente en posición inicial) ─────────
       setIsAnimating(true)
       setOffsetX(0)
 
       if (directionLocked.current === 'v' && Math.abs(diffY) > 50) {
         if (diffY > 0) {
-          // Desplazamiento hacia ABAJO
-          // REQUISITO: Para cerrar, los paneles TIENEN que estar en la posición inicial (scrollTop <= 5).
-          // Si están desplazados (scrollTop > 5), el gesto desplaza la vista normalmente pero NUNCA los cierra.
           const currentScroll = getScrollTop()
           if (sp && !fo && currentScroll <= 5) {
             setIsFadingOutRef.current(true)
@@ -173,7 +164,6 @@ export const useGestures = ({
     const handleWheel = (e: WheelEvent) => {
       const sp = showPanelsRef.current
       const fo = isFadingOutRef.current
-      // Rueda ratón hacia abajo en el tope
       const currentScroll = getScrollTop()
       if (e.deltaY < 0 && sp && !fo && currentScroll <= 5) {
         setIsFadingOutRef.current(true)
@@ -187,7 +177,7 @@ export const useGestures = ({
 
     window.addEventListener('touchstart', handleTouchStart, { passive: true })
     window.addEventListener('touchmove', handleTouchMove, { passive: false })
-    window.addEventListener('touchend', handleTouchEnd, { passive: false })
+    window.addEventListener('touchend', handleTouchEnd, { passive: true })
     window.addEventListener('wheel', handleWheel, { passive: true })
 
     return () => {

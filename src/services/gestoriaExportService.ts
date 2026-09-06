@@ -133,3 +133,35 @@ export async function enviarTrimestreGestoriaAutomático() {
     return false
   }
 }
+
+export const gestoriaExportService = {
+  exportTrimestre: async (trimestre: string, year: string) => {
+    const q = parseInt(trimestre.replace(/\D/g, '')) || 1
+    const y = parseInt(year) || new Date().getFullYear()
+    const startMonth = (q - 1) * 3
+    const endMonth = startMonth + 2
+    const startDate = new Date(y, startMonth, 1).toISOString().split('T')[0]
+    const endDate = new Date(y, endMonth + 1, 0).toISOString().split('T')[0]
+
+    const { data: facturas } = await supabase
+      .from('facturas')
+      .select('*')
+      .gte('fecha', startDate)
+      .lte('fecha', endDate)
+
+    let csv = 'Numero;Fecha;Cliente;Base Imponible;IVA;Total;Estado\n'
+    ;(facturas || []).forEach((f: any) => {
+      const base = ((f.total || 0) / 1.21).toFixed(2)
+      const iva = ((f.total || 0) - (f.total || 0) / 1.21).toFixed(2)
+      csv += `"${f.numero || ''}";"${f.fecha || ''}";"${f.cliente?.nombre || f.cliente_nombre || ''}";"${base}";"${iva}";"${(f.total || 0).toFixed(2)}";"${f.estado || ''}"\n`
+    })
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `Gestaria_Trimestre_${q}_${y}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+}

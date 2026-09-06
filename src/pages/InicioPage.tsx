@@ -13,6 +13,7 @@ import { useClima } from '../hooks/useClima'
 import { PanelControlHeader } from '../components/PanelControlHeader'
 import { MetisAlertsSection } from '../components/MetisAlertsSection'
 import { MatriculaBadge } from '../components/UI'
+import { SevenSegmentClock } from '../components/common/SevenSegmentClock'
 import { CronFiscalService, CronEvent } from '../lib/cronFiscalService'
 import { enviarTrimestreGestoriaAutomático } from '../services/gestoriaExportService'
 import { useToast } from '../lib/ToastContext'
@@ -58,6 +59,20 @@ export function InicioPage() {
   const [showPanels, setShowPanels] = useState(false)
   const [isFadingOut, setIsFadingOut] = useState(false)
   const [mostrarAvisos, setMostrarAvisos] = useState(false)
+  const [fondoLandscape, setFondoLandscape] = useState('/images/backgrounds/background_landscape.jpg')
+  const [fondoPortrait, setFondoPortrait] = useState('/images/backgrounds/background_portrait.png')
+
+  useEffect(() => {
+    supabase
+      .from('configuracion')
+      .select('fondo_landscape, fondo_portrait')
+      .eq('id', 1)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data?.fondo_landscape) setFondoLandscape(data.fondo_landscape)
+        if (data?.fondo_portrait) setFondoPortrait(data.fondo_portrait)
+      }, () => {})
+  }, [])
 
   const [panelReady, setPanelReady] = useState(false)
   const panelReadyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -198,7 +213,7 @@ export function InicioPage() {
 
   return (
     <div
-      className="w-full min-h-screen pb-24 relative overflow-x-hidden touch-pan-y"
+      className="w-full min-h-screen pb-28 relative overflow-x-hidden touch-pan-y select-none"
       onClick={handleAppStart}
       onDoubleClick={handleDoubleClick}
       style={{
@@ -208,6 +223,23 @@ export function InicioPage() {
         backfaceVisibility: 'hidden',
       }}
     >
+      {/* Fondo inmersivo oficial de alta resolución */}
+      <div className="fixed inset-0 z-0 overflow-hidden pointer-events-none select-none">
+        <img
+          src={fondoPortrait}
+          alt=""
+          className="absolute inset-0 w-full h-full object-cover filter blur-3xl opacity-35 scale-110 hidden md:block"
+          aria-hidden
+        />
+        <img
+          src={fondoPortrait}
+          alt="DM CAR Chapa y Pintura"
+          className="gestarian-bg-image select-none pointer-events-none"
+          aria-hidden
+        />
+        <div className="gestarian-bg-overlay" />
+      </div>
+
       <div>
         <PanelControlHeader
           showPanels={showPanels} isFadingOut={isFadingOut} hora={hora} tempActual={tempActual}
@@ -215,24 +247,17 @@ export function InicioPage() {
           mostrarAvisos={mostrarAvisos} setMostrarAvisos={setMostrarAvisos} touchSelectable={panelInteractable}
         />
 
-        {/* Reloj Digital Permanente en Pantalla de Inicio (Tipografía calculadora, color blanco amarillento, peso alto) */}
-        <div className="relative z-10 w-full max-w-4xl mx-auto pt-[130px] flex flex-col items-center justify-center select-none px-4">
-          <div
-            className="font-black tracking-widest tabular-nums leading-none text-6xl sm:text-8xl md:text-9xl text-center"
-            style={{
-              fontFamily: "'Share Tech Mono', 'Orbitron', 'Courier New', monospace, system-ui",
-              fontWeight: 900,
-              color: '#fffde7', // Blanco amarillento cálido (calculadora LCD backlight)
-              textShadow: '0 0 25px rgba(254, 240, 138, 0.8), 0 0 50px rgba(253, 224, 71, 0.5), 0 0 80px rgba(234, 179, 8, 0.3)'
-            }}
-          >
-            {hora.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-          </div>
+        {/* Reloj Digital Permanente Flotante FIJO sin scroll (Tipografía calculadora LCD rayitas verticales, subido 20px -> top-[110px]) */}
+        <div
+          id="reloj-digital-flotante"
+          className="fixed top-[110px] left-0 right-0 z-20 pointer-events-none flex flex-col items-center justify-center select-none px-4"
+        >
+          <SevenSegmentClock date={hora} />
         </div>
 
         {showPanels && (
           <div
-            className={`relative z-10 space-y-6 pt-4 transition-opacity duration-500 ease-in-out
+            className={`relative z-10 space-y-6 pt-[220px] transition-opacity duration-500 ease-in-out
               ${isFadingOut ? 'opacity-0' : 'opacity-100'}
               ${!panelInteractable ? 'pointer-events-none select-none' : 'pointer-events-auto'}
             `}

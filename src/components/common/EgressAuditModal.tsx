@@ -1,5 +1,5 @@
 import React from 'react'
-import { ShieldCheck, Zap, HardDrive, Check, X, ArrowDownRight, AlertTriangle } from 'lucide-react'
+import { ShieldCheck, Zap, Database, HardDrive, Check, X, ArrowDownRight, RefreshCw, AlertTriangle } from 'lucide-react'
 
 interface EgressAuditModalProps {
   isOpen: boolean
@@ -27,7 +27,7 @@ export const EgressAuditModal: React.FC<EgressAuditModalProps> = ({ isOpen, onCl
     {
       module: 'Suscripciones Supabase Realtime',
       before: 'Múltiples canales sin desuscripción, sin debounce y escuchando toda la fila',
-      after: 'Hook useRealtimeSubscription centralizado con debounce de 600ms y cleanup en unmount',
+      after: 'Hook useRealtimeSubscription centralizado con debounce de 300ms y cleanup en unmount',
       status: 'Corregido y Optimizado',
       saving: '85%'
     },
@@ -96,7 +96,7 @@ export const EgressAuditModal: React.FC<EgressAuditModalProps> = ({ isOpen, onCl
                 <Zap className="w-4 h-4" />
                 REALTIME CLEANUP
               </div>
-              <div className="text-2xl font-black text-white">Debounce 600ms</div>
+              <div className="text-2xl font-black text-white">Debounce 300ms</div>
               <div className="text-xs text-slate-400 mt-1">Cero fugas de canales</div>
             </div>
           </div>
